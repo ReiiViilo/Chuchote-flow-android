@@ -1,54 +1,58 @@
-# Transcribro
+# Chuchote Flow Android
 
-Transcribro is a private and on-device speech recognition keyboard and service for Android.\
-It uses whisper.cpp to run the OpenAI Whisper family of models and Silero VAD for voice activity detection.\
-It features a voice input keyboard, enabling you to type with speech.\
-It can also be used by other apps either explicitly or when set as the user-selected speech to text app which some apps
-may use for speech to text.
+Le client Android de **Chuchote Flow** — dictée vocale personnelle, gratuite et locale. Fork de [Transcribro](https://github.com/soupslurpr/Transcribro) (licence ISC), le clavier vocal open source basé sur whisper.cpp.
 
-## Language support
+Ce dépôt forme, avec [Chuchote-Flow](https://github.com/ReiiViilo/Chuchote-Flow) (desktop, fork de Handy), **un seul produit** : des interfaces par plateforme, un cerveau commun.
 
-Transcribro currently only supports English. However, supporting other languages is planned and tracked in https://github.com/soupslurpr/Transcribro/issues/18.
+## Architecture « un seul produit »
 
-## Download
+```
+   ┌─────────────────────────────────────────────┐
+   │              Cerveau commun (nuage)          │
+   │  historique des dictées · prompts FR-QC ·    │
+   │  dictionnaire personnel · apprentissages     │
+   └──────────────┬──────────────┬───────────────┘
+                  │              │
+        ┌─────────┴────┐   ┌─────┴──────────┐
+        │   Desktop    │   │    Android     │
+        │ (fork Handy) │   │ (ce dépôt,     │
+        │              │   │ fork Transcribro) │
+        └──────────────┘   └────────────────┘
+```
 
-Transcribro is available on the [Accrescent](https://accrescent.app) app store and GitHub releases.\
-[Accrescent](https://accrescent.app) is the recommended way to get Transcribro as it is more secure
-than GitHub releases.\
-Click on the badge below to get it on [Accrescent](https://accrescent.app).
+Peu importe l'appareil où tu dictes, tout aboutit au même historique, avec les mêmes prompts de nettoyage et le même dictionnaire personnel — comme le compte Wispr Flow, mais à toi.
 
-<a href="https://accrescent.app/app/dev.soupslurpr.transcribro">
-    <img alt="Get it on Accrescent" src="https://accrescent.app/badges/get-it-on.png" height="80">
-</a>
+## Ce que Transcribro fournit déjà
 
-The package name and SHA-256 hash of the signing certificate is below, so if you are downloading the APK, you can
-verify Transcribro with [`apksigner`](https://developer.android.com/studio/command-line/apksigner#usage-verify)
-using `apksigner verify --print-certs Transcribro-X.Y.Z.apk` and/or
-[AppVerifier](https://github.com/soupslurpr/AppVerifier).
-If you are downloading from [Accrescent](https://accrescent.app) then you should verify
-[Accrescent](https://accrescent.app) itself [here](https://accrescent.app/faq#verifying).
+- Clavier vocal Android (IME) : le micro apparaît dans n'importe quelle app, le texte dicté s'insère dans le champ actif
+- Transcription 100 % locale avec whisper.cpp + détection de voix Silero VAD
+- Aucune connexion réseau requise, aucune télémétrie
 
-dev.soupslurpr.transcribro\
-7D:BC:FB:FA:A1:35:B4:4E:6E:93:91:02:25:DC:B1:4E:05:82:91:DA:8C:2D:36:22:73:49:49:B7:1A:B3:BE:64
+## Feuille de route Chuchote Flow
 
-It can also be found on a [Bluesky post](https://bsky.app/profile/soupslurpr.dev/post/3kopox4ffl72t)
-to distrust the website.
-It is encouraged to verify it's the same with other people as well for assurance.
+1. **Fondation** (cette étape) : import de Transcribro, build APK automatique par GitHub Actions
+2. **Nettoyage LLM** : la même étape de post-traitement que le desktop — les prompts « Chuchote — Nettoyage (FR-QC) » et « Reformulation (FR-QC) » appliqués à la transcription avant insertion (API ou serveur local)
+3. **Synchronisation** : historique des dictées poussé vers le cerveau commun (Supabase), partagé avec le desktop
+4. **Bulle flottante** : le widget persistant façon Wispr Flow — superposition par-dessus n'importe quelle app, vignette avec waveform en temps réel, déclenchement par secousse, insertion du texte dans le champ actif
 
-## Community
+## Installer
 
-Join the Matrix space at https://matrix.to/#/#transcribro:matrix.org for the General, Announcements, and
-Testing rooms.
+L'APK est compilé automatiquement : onglet [Actions → Build APK](../../actions/workflows/build-apk.yml), ouvrir la dernière exécution verte et télécharger l'artefact `chuchote-flow-android-debug`.
 
-## Contributing
+Sur le téléphone : autoriser l'installation de sources inconnues, installer l'APK, puis activer le clavier dans Paramètres → Système → Clavier. Comme l'APK est signé avec une clé debug qui change d'un build à l'autre, une mise à jour peut exiger de désinstaller la version précédente d'abord (une clé de signature stable viendra plus tard).
 
-Check [CONTRIBUTING.md](https://github.com/soupslurpr/Transcribro/blob/master/CONTRIBUTING.md) for things to know
-if you want to contribute.
+Pour compiler localement : Android Studio, ouvrir le projet, `Run` — voir [UPSTREAM_README.md](UPSTREAM_README.md).
 
-## Donation
+## Garder le fork à jour avec Transcribro
 
-Thank you to everyone who donated.
+L'historique complet est conservé :
 
-## Screenshots
+```sh
+git remote add upstream https://github.com/soupslurpr/Transcribro   # une seule fois
+git fetch upstream
+git merge upstream/main
+```
 
-<img src="/Screenshot_20250214-223133.png" alt="Screenshot of the keyboard UI, focused on the search bar of Vanadium's incognito tab." width="250">
+## Licence et attribution
+
+Projet personnel, non commercial. Basé sur [Transcribro](https://github.com/soupslurpr/Transcribro) de soupslurpr, sous licence ISC — conservée dans [LICENSE.txt](LICENSE.txt), avec les licences de whisper.cpp, Silero VAD et des modèles Whisper. Merci à la communauté Transcribro.
