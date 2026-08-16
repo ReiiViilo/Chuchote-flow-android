@@ -17,6 +17,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout (avec whisper.cpp)
         uses: actions/checkout@v4
@@ -41,3 +43,34 @@ jobs:
           name: chuchote-flow-android-debug
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 30
+
+      # Publie l'APK dans une release « latest » toujours à jour. Contrairement
+      # aux artefacts (zippés, réservés aux utilisateurs connectés, invisibles
+      # dans l'app GitHub mobile), un fichier de release d'un dépôt public se
+      # télécharge et s'installe directement depuis le navigateur du téléphone :
+      # https://github.com/ReiiViilo/Chuchote-flow-android/releases/latest
+      - name: Publier l'APK dans la release « latest »
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          apk=$(find app/build/outputs/apk/debug -name '*.apk' | head -n 1)
+          if [ -z "$apk" ]; then
+            echo "Aucun APK trouvé"
+            exit 1
+          fi
+          cp "$apk" chuchote-flow.apk
+          printf '%s\n' \
+            "APK compilé automatiquement depuis \`main\` (commit ${{ github.sha }})." \
+            "" \
+            "**Installation depuis le téléphone :** toucher \`chuchote-flow.apk\` ci-dessous, autoriser le navigateur à installer des applications si Android le demande, puis ouvrir le fichier téléchargé." \
+            "" \
+            "Signé avec la clé debug du runner : si une mise à jour refuse de s'installer, désinstaller la version précédente d'abord." \
+            > notes.md
+          # La release est recréée à chaque build pour que « latest » pointe
+          # toujours sur le dernier commit de main.
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest chuchote-flow.apk \
+            --title "Dernier APK (build #${{ github.run_number }})" \
+            --notes-file notes.md
