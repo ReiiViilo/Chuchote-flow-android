@@ -37,9 +37,13 @@ Peu importe l'appareil où tu dictes, tout aboutit au même historique, avec les
 
 ## Installer
 
-L'APK est compilé automatiquement : onglet [Actions → Build APK](../../actions/workflows/build-apk.yml), ouvrir la dernière exécution verte et télécharger l'artefact `chuchote-flow-android-debug`.
+**Directement depuis le téléphone** (la façon la plus simple) : ouvrir la page [**Releases → latest**](../../releases/latest) dans le navigateur, toucher `chuchote-flow.apk`, autoriser le navigateur à installer des applications si Android le demande, puis ouvrir le fichier téléchargé. La release est recréée à chaque build, donc elle contient toujours la dernière version de `main`.
 
-Sur le téléphone : autoriser l'installation de sources inconnues, installer l'APK, puis activer le clavier dans Paramètres → Système → Clavier. Comme l'APK est signé avec une clé debug qui change d'un build à l'autre, une mise à jour peut exiger de désinstaller la version précédente d'abord (une clé de signature stable viendra plus tard).
+Activer ensuite le clavier dans Paramètres → Système → Langues et saisie → Clavier à l'écran.
+
+> Les artefacts de l'onglet [Actions](../../actions/workflows/build-apk.yml) contiennent le même APK, mais zippé et réservé aux utilisateurs connectés — l'app GitHub mobile ne peut pas les télécharger. Utiliser la page Releases sur mobile.
+
+Comme l'APK est signé avec la clé debug du runner, qui change d'un build à l'autre, une mise à jour peut exiger de désinstaller la version précédente d'abord (une clé de signature stable viendra plus tard).
 
 Pour compiler localement : Android Studio, ouvrir le projet, `Run` — voir [UPSTREAM_README.md](UPSTREAM_README.md).
 
