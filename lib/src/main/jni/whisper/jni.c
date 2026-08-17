@@ -175,7 +175,11 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_fullTranscribe(
     params.print_timestamps = false;
     params.print_special = false;
     params.translate = false;
-    params.language = "en";
+    // Langue de dictée. "fr" plutôt que "auto" : la détection automatique
+    // bascule facilement vers l'anglais quand une phrase française contient
+    // des mots anglais, alors qu'avec "fr" Whisper transcrit ces mots tels
+    // quels tout en gardant le reste correct.
+    params.language = "fr";
     params.n_threads = num_threads;
     params.offset_ms = 0;
     params.no_context = true;

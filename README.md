@@ -26,11 +26,17 @@ Peu importe l'appareil où tu dictes, tout aboutit au même historique, avec les
 
 - Clavier vocal Android (IME) : le micro apparaît dans n'importe quelle app, le texte dicté s'insère dans le champ actif
 - Transcription 100 % locale avec whisper.cpp + détection de voix Silero VAD
-- Aucune connexion réseau requise, aucune télémétrie
+- Aucune connexion réseau requise, aucune télémétrie (l'app ne demande que la permission micro — pas même `INTERNET`)
+
+## Ce que ce fork change
+
+- **Français** : Transcribro embarque `tiny.en`, un modèle **anglais uniquement**, et fige la langue à `en` dans le code natif. Ce fork utilise le modèle multilingue `small-q8_0` et dicte en français (`fr`).
+- Le modèle (~264 Mo) dépasse la limite de 100 Mo par fichier de GitHub : il est donc **téléchargé automatiquement au moment du build** par la tâche Gradle `downloadWhisperModel`, et non versionné. Rien à faire manuellement, y compris dans Android Studio.
+- Pour changer de modèle ou de langue : `whisperModel` dans [`app/build.gradle.kts`](app/build.gradle.kts) (voir la liste officielle dans `whisper.cpp/models/download-ggml-model.sh`), le chemin dans `MainRecognitionService.kt`, et `params.language` dans [`lib/src/main/jni/whisper/jni.c`](lib/src/main/jni/whisper/jni.c).
 
 ## Feuille de route Chuchote Flow
 
-1. **Fondation** (cette étape) : import de Transcribro, build APK automatique par GitHub Actions
+1. **Fondation** ✅ : import de Transcribro, build APK automatique par GitHub Actions, transcription en français
 2. **Nettoyage LLM** : la même étape de post-traitement que le desktop — les prompts « Chuchote — Nettoyage (FR-QC) » et « Reformulation (FR-QC) » appliqués à la transcription avant insertion (API ou serveur local)
 3. **Synchronisation** : historique des dictées poussé vers le cerveau commun (Supabase), partagé avec le desktop
 4. **Bulle flottante** : le widget persistant façon Wispr Flow — superposition par-dessus n'importe quelle app, vignette avec waveform en temps réel, déclenchement par secousse, insertion du texte dans le champ actif
