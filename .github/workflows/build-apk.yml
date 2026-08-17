@@ -34,6 +34,14 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # Le modèle Whisper (~264 Mo) est téléchargé par la tâche Gradle
+      # downloadWhisperModel ; le cache évite de le retélécharger à chaque build.
+      - name: Cache du modèle Whisper
+        uses: actions/cache@v4
+        with:
+          path: app/src/main/assets/models/whisper
+          key: whisper-model-small-q8_0
+
       - name: Build debug APK
         run: ./gradlew assembleDebug --no-daemon
 

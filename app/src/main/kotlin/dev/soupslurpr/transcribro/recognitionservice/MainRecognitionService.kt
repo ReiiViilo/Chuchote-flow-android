@@ -67,7 +67,10 @@ class MainRecognitionService : RecognitionService() {
                     override fun getWhisperContext(): WhisperContext {
                         return WhisperContext.createContextFromAsset(
                             application.assets,
-                            "models/whisper/ggml-model-whisper-tiny.en-q8_0.bin"
+                            // Modèle multilingue (le variant .en ne transcrit
+                            // que l'anglais). Téléchargé au build par la tâche
+                            // downloadWhisperModel de app/build.gradle.kts.
+                            "models/whisper/ggml-small-q8_0.bin"
                         )
                     }
                 },

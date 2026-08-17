@@ -15,3 +15,7 @@
 .cxx
 local.properties
 /app/release
+
+# Modèle Whisper téléchargé au build (trop gros pour Git)
+app/src/main/assets/models/whisper/*.bin
+app/src/main/assets/models/whisper/*.bin.part

@@ -3,5 +3,5 @@
     <subtype
         android:imeSubtypeMode="voice"
         android:isAuxiliary="true"
-        android:languageTag="en-US" />
+        android:languageTag="fr-CA" />
 </input-method>

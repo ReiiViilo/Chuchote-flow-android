@@ -4,6 +4,46 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose") version "2.2.0"
 }
 
+// Modèle Whisper multilingue embarqué dans l'APK. Il pèse ~264 Mo, au-dessus
+// de la limite de 100 Mo par fichier de GitHub, donc il est téléchargé au
+// moment du build plutôt que versionné. Le nom vient de la liste officielle
+// de whisper.cpp (models/download-ggml-model.sh).
+val whisperModel = "small-q8_0"
+val whisperModelFile = file("src/main/assets/models/whisper/ggml-$whisperModel.bin")
+
+val downloadWhisperModel by tasks.registering {
+    description = "Télécharge le modèle Whisper multilingue s'il est absent."
+    outputs.file(whisperModelFile)
+    doLast {
+        if (whisperModelFile.exists() && whisperModelFile.length() > 50_000_000L) {
+            logger.lifecycle("Modèle Whisper déjà présent : ${whisperModelFile.name}")
+            return@doLast
+        }
+        whisperModelFile.parentFile.mkdirs()
+        val url =
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-$whisperModel.bin"
+        logger.lifecycle("Téléchargement du modèle Whisper $whisperModel…")
+        val temp = java.io.File("${whisperModelFile.path}.part")
+        temp.delete()
+        java.net.URI(url).toURL().openStream().use { input ->
+            temp.outputStream().use { output -> input.copyTo(output) }
+        }
+        // Une page d'erreur HTML ne ferait que quelques kilo-octets : refuser
+        // un fichier manifestement trop petit plutôt que livrer un APK cassé.
+        if (temp.length() < 50_000_000L) {
+            val size = temp.length()
+            temp.delete()
+            throw GradleException("Modèle Whisper invalide ($size octets) depuis $url")
+        }
+        temp.renameTo(whisperModelFile)
+        logger.lifecycle("Modèle téléchargé : ${whisperModelFile.length() / 1_000_000} Mo")
+    }
+}
+
+tasks.named("preBuild") {
+    dependsOn(downloadWhisperModel)
+}
+
 android {
     namespace = "dev.soupslurpr.transcribro"
     compileSdk = 36
