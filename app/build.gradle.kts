@@ -1,3 +1,9 @@
+// Importer explicitement : dans un script .gradle.kts, l'identifiant `java`
+// désigne l'extension Gradle du plugin Java et masque le package `java.*`,
+// donc `java.io.File` / `java.net.URI` ne compilent pas.
+import java.io.File
+import java.net.URI
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -23,9 +29,9 @@ val downloadWhisperModel by tasks.registering {
         val url =
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-$whisperModel.bin"
         logger.lifecycle("Téléchargement du modèle Whisper $whisperModel…")
-        val temp = java.io.File("${whisperModelFile.path}.part")
+        val temp = File("${whisperModelFile.path}.part")
         temp.delete()
-        java.net.URI(url).toURL().openStream().use { input ->
+        URI(url).toURL().openStream().use { input ->
             temp.outputStream().use { output -> input.copyTo(output) }
         }
         // Une page d'erreur HTML ne ferait que quelques kilo-octets : refuser
