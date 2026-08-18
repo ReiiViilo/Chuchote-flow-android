@@ -8,6 +8,11 @@ name: "Build APK"
 on:
   push:
     branches: [main]
+  # Compiler aussi les pull requests : une erreur de compilation est ainsi
+  # visible avant le merge plutôt que sur main. La publication de la release
+  # reste conditionnée à main (voir l'étape correspondante).
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
