@@ -10,6 +10,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -20,9 +21,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -45,6 +49,7 @@ import com.google.accompanist.permissions.rememberPermissionState
 import dev.soupslurpr.transcribro.R
 import dev.soupslurpr.transcribro.overlay.FloatingWidgetService
 import dev.soupslurpr.transcribro.overlay.TextInsertionAccessibilityService
+import dev.soupslurpr.transcribro.remote.RemoteTranscriptionSettings
 import dev.soupslurpr.transcribro.ui.reusablecomposables.ScreenLazyColumn
 import java.time.LocalDateTime
 import kotlin.random.Random
@@ -71,6 +76,11 @@ fun StartScreen() {
             Settings.canDrawOverlays(context)
         )
     }
+
+    val remoteSettings = remember { RemoteTranscriptionSettings(context) }
+    var remoteEnabled by rememberSaveable { mutableStateOf(remoteSettings.enabled) }
+    var remoteBaseUrl by rememberSaveable { mutableStateOf(remoteSettings.baseUrl) }
+    var remoteToken by rememberSaveable { mutableStateOf(remoteSettings.token) }
 
     var isTextInsertionEnabled by rememberSaveable {
         mutableStateOf(
@@ -256,6 +266,59 @@ fun StartScreen() {
                             Text("Open on-screen keyboard system settings")
                         }
                     }
+                }
+            }
+        }
+        item {
+            ElevatedCard {
+                Column(
+                    Modifier.padding(16.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(
+                            checked = remoteEnabled,
+                            onCheckedChange = {
+                                remoteEnabled = it
+                                remoteSettings.enabled = it
+                            }
+                        )
+                        Spacer(Modifier.padding(8.dp))
+                        Text("Transcription par relais")
+                    }
+                    Spacer(Modifier.padding(8.dp))
+                    Text(
+                        "Envoie la dictée à ton relais, bien plus rapide que le téléphone. " +
+                                "Si le relais ne répond pas, la transcription se fait sur l'appareil " +
+                                "comme d'habitude — une dictée n'est jamais perdue."
+                    )
+                    Spacer(Modifier.padding(8.dp))
+                    OutlinedTextField(
+                        value = remoteBaseUrl,
+                        onValueChange = {
+                            remoteBaseUrl = it
+                            remoteSettings.baseUrl = it
+                        },
+                        singleLine = true,
+                        label = { Text("Adresse du relais") },
+                        placeholder = { Text("https://mon-relais.vercel.app") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.padding(4.dp))
+                    OutlinedTextField(
+                        value = remoteToken,
+                        onValueChange = {
+                            remoteToken = it
+                            remoteSettings.token = it
+                        },
+                        singleLine = true,
+                        label = { Text("Jeton") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.padding(8.dp))
+                    Text(
+                        "Tant que ce réglage est désactivé, l'application n'envoie rien : " +
+                                "tout reste sur l'appareil."
+                    )
                 }
             }
         }

@@ -4,8 +4,12 @@
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- Widget de dictée flottant. Toujours aucune permission réseau : la
-         transcription reste entièrement sur l'appareil. -->
+    <!-- Requis uniquement par le relais de transcription, qui est désactivé
+         par défaut. Sans relais configuré, aucune donnée ne quitte l'appareil ;
+         avec relais, l'audio part vers le serveur que vous avez indiqué. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Widget de dictée flottant. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
