@@ -65,7 +65,7 @@ class FloatingWidgetService : Service() {
     private var panelView: View? = null
     private var waveView: SineWaveView? = null
     private var cancelView: View? = null
-    private var statusView: TextView? = null
+    private var progressView: ProgressBarView? = null
     private var panelOnLeft = true
 
     private var speechRecognizer: SpeechRecognizer? = null
@@ -76,6 +76,11 @@ class FloatingWidgetService : Service() {
     private var dismissCircle: View? = null
     private var dismissAttached = false
     private var bubbleHidden = false
+
+    // Position de la sphère avant le geste qui l'a menée à la corbeille : c'est
+    // là qu'elle réapparaîtra, et non sur la corbeille elle-même.
+    private var restoreX = 0
+    private var restoreY = 0
 
     private var state = State.IDLE
     private var panelAttached = false
@@ -236,7 +241,7 @@ class FloatingWidgetService : Service() {
                         if (dragging) {
                             val dropped = isOverDismissTarget()
                             hideDismissTarget()
-                            if (dropped) hideBubble()
+                            if (dropped) hideBubble(originX, originY)
                             return true
                         }
                         // Un appui lance la dictée, puis la valide : c'est la
@@ -329,7 +334,20 @@ class FloatingWidgetService : Service() {
         return hypot(bubbleCenterX - targetCenterX, bubbleCenterY - targetCenterY) < dp(80)
     }
 
-    private fun hideBubble() {
+    /**
+     * Range la sphère. [previousX] et [previousY] sont sa position avant le
+     * geste qui vient de la mener à la corbeille : c'est là qu'elle reviendra,
+     * plutôt que sur la corbeille où le doigt l'a lâchée.
+     */
+    private fun hideBubble(previousX: Int, previousY: Int) {
+        restoreX = previousX
+        restoreY = previousY
+
+        // Une dictée pouvait être en cours : sans cela, le tracé et la croix
+        // restaient affichés alors que la sphère venait de disparaître.
+        speechRecognizer?.cancel()
+        resetToIdle()
+
         bubbleView?.let { runCatching { windowManager.removeView(it) } }
         bubbleHidden = true
         Toast.makeText(this, "Widget masqué — secoue le téléphone pour le rappeler", Toast.LENGTH_LONG).show()
@@ -338,6 +356,8 @@ class FloatingWidgetService : Service() {
     private fun showBubble() {
         val bubble = bubbleView ?: return
         if (!bubbleHidden) return
+        bubbleParams.x = restoreX.coerceIn(minBubbleX(), maxBubbleX())
+        bubbleParams.y = restoreY.coerceIn(minBubbleY(), maxBubbleY())
         runCatching { windowManager.addView(bubble, bubbleParams) }
             .onSuccess { bubbleHidden = false }
     }
@@ -371,10 +391,7 @@ class FloatingWidgetService : Service() {
 
         waveView = SineWaveView(this)
 
-        statusView = TextView(this).apply {
-            setTextColor(Color.parseColor("#9FE8E0"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            gravity = Gravity.CENTER_VERTICAL
+        progressView = ProgressBarView(this).apply {
             visibility = View.GONE
         }
 
@@ -392,28 +409,27 @@ class FloatingWidgetService : Service() {
         val row = panelView as? LinearLayout ?: return
         val cancel = cancelView ?: return
         val wave = waveView ?: return
-        val status = statusView ?: return
+        val progress = progressView ?: return
 
         row.removeAllViews()
 
         val cancelParams = LinearLayout.LayoutParams(dp(32), dp(32))
-        val waveParams = LinearLayout.LayoutParams(0, dp(34), 1f)
-        val statusParams = LinearLayout.LayoutParams(
-            0,
-            LinearLayout.LayoutParams.WRAP_CONTENT,
-            1f
-        )
+        // Le tracé et la barre ont exactement la même largeur : la pastille
+        // garde ainsi la même longueur pendant et après la dictée, sans vide
+        // entre la barre et la sphère.
+        val waveParams = LinearLayout.LayoutParams(dp(CONTENT_WIDTH_DP), dp(34))
+        val progressParams = LinearLayout.LayoutParams(dp(CONTENT_WIDTH_DP), dp(34))
 
         if (onLeft) {
             waveParams.marginStart = dp(10)
-            statusParams.marginStart = dp(10)
+            progressParams.marginStart = dp(10)
             row.addView(cancel, cancelParams)
             row.addView(wave, waveParams)
-            row.addView(status, statusParams)
+            row.addView(progress, progressParams)
         } else {
             cancelParams.marginStart = dp(10)
             row.addView(wave, waveParams)
-            row.addView(status, statusParams)
+            row.addView(progress, progressParams)
             row.addView(cancel, cancelParams)
         }
     }
@@ -498,8 +514,9 @@ class FloatingWidgetService : Service() {
 
         showPanel()
         waveView?.setActive(true)
-        statusView?.visibility = View.GONE
         waveView?.visibility = View.VISIBLE
+        progressView?.setActive(false)
+        progressView?.visibility = View.GONE
         orbView?.setActive(true)
         state = State.RECORDING
 
@@ -517,8 +534,8 @@ class FloatingWidgetService : Service() {
 
         waveView?.setActive(false)
         waveView?.visibility = View.GONE
-        statusView?.text = "Transcription…"
-        statusView?.visibility = View.VISIBLE
+        progressView?.visibility = View.VISIBLE
+        progressView?.setActive(true)
         orbView?.setActive(false)
 
         speechRecognizer?.stopListening()
@@ -534,6 +551,7 @@ class FloatingWidgetService : Service() {
         mainHandler.removeCallbacks(transcriptionTimeout)
         state = State.IDLE
         waveView?.setActive(false)
+        progressView?.setActive(false)
         orbView?.setActive(false)
         hidePanel()
     }
@@ -638,7 +656,8 @@ class FloatingWidgetService : Service() {
         private const val DISMISS_WINDOW_DP = 96
         private const val DISMISS_CIRCLE_DP = 56
         private const val BUBBLE_SIZE_DP = 64
-        private const val PANEL_WIDTH_DP = 130
+        private const val CONTENT_WIDTH_DP = 72
+        private const val PANEL_WIDTH_DP = 114
         private const val PANEL_GAP_DP = 8
         private const val PANEL_HEIGHT_DP = 44
     }
