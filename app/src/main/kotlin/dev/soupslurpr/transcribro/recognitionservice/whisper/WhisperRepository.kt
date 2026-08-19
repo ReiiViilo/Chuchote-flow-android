@@ -3,9 +3,17 @@ package dev.soupslurpr.transcribro.recognitionservice.whisper
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import com.whispercpp.whisper.WhisperContext
+import dev.soupslurpr.transcribro.remote.RemoteTranscriber
 
+/**
+ * @param remoteTranscriber relais éventuel. Quand il est configuré, il est
+ * tenté en premier : un serveur bien doté transcrit plus vite que le
+ * processeur du téléphone. Son échec n'est jamais fatal — on retombe sur le
+ * modèle embarqué.
+ */
 class WhisperRepository(
-    private val whisperLocalDataSource: WhisperLocalDataSource
+    private val whisperLocalDataSource: WhisperLocalDataSource,
+    private val remoteTranscriber: RemoteTranscriber? = null,
 ) {
 
     private var whisperContext: MutableState<WhisperContext?> =
@@ -18,6 +26,8 @@ class WhisperRepository(
     }
 
     suspend fun transcribeAudio(data: ShortArray): String {
+        remoteTranscriber?.transcribe(data, SAMPLE_RATE)?.let { return it }
+
         loadWhisperContextIfNull()
         // assume we only have one channel
         var buffer = FloatArray(data.size) { index ->
@@ -42,5 +52,10 @@ class WhisperRepository(
 
     suspend fun release() {
         whisperContext.value?.release()
+    }
+
+    companion object {
+        /** Fréquence à laquelle le service capte l'audio. */
+        private const val SAMPLE_RATE = 16000
     }
 }

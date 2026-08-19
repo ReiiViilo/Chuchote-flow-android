@@ -22,6 +22,7 @@ import dev.soupslurpr.transcribro.recognitionservice.silerovad.SileroVadReposito
 import dev.soupslurpr.transcribro.recognitionservice.whisper.WhisperApi
 import dev.soupslurpr.transcribro.recognitionservice.whisper.WhisperLocalDataSource
 import dev.soupslurpr.transcribro.recognitionservice.whisper.WhisperRepository
+import dev.soupslurpr.transcribro.remote.RemoteTranscriber
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -80,7 +81,8 @@ class MainRecognitionService : RecognitionService() {
                     }
                 },
                 ioDispatcher = Dispatchers.IO,
-            )
+            ),
+            remoteTranscriber = RemoteTranscriber(this),
         )
 
     private val sileroVadRepository = SileroVadRepository(
