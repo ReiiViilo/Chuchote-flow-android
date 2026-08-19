@@ -39,6 +39,7 @@ import dev.soupslurpr.transcribro.MainActivity
 import dev.soupslurpr.transcribro.R
 import dev.soupslurpr.transcribro.recognitionservice.MainRecognitionService
 import kotlin.math.abs
+import kotlin.math.hypot
 
 /**
  * Widget de dictée flottant, à la manière de Wispr Flow : une sphère posée
@@ -67,6 +68,10 @@ class FloatingWidgetService : Service() {
     private var speechRecognizer: SpeechRecognizer? = null
     private var sensorManager: SensorManager? = null
     private var shakeDetector: ShakeDetector? = null
+
+    private var dismissView: View? = null
+    private var dismissAttached = false
+    private var bubbleHidden = false
 
     private var state = State.IDLE
     private var panelAttached = false
@@ -103,6 +108,15 @@ class FloatingWidgetService : Service() {
         PixelFormat.TRANSLUCENT
     )
 
+    private val dismissParams = WindowManager.LayoutParams(
+        WindowManager.LayoutParams.WRAP_CONTENT,
+        WindowManager.LayoutParams.WRAP_CONTENT,
+        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+        PixelFormat.TRANSLUCENT
+    )
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -132,6 +146,9 @@ class FloatingWidgetService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        // Relancer le widget depuis l'application le fait réapparaître s'il
+        // avait été glissé dans la corbeille.
+        if (bubbleHidden) showBubble()
         return START_STICKY
     }
 
@@ -146,6 +163,7 @@ class FloatingWidgetService : Service() {
         speechRecognizer = null
 
         hidePanel()
+        hideDismissTarget()
         bubbleView?.let { runCatching { windowManager.removeView(it) } }
         bubbleView = null
         orbView = null
@@ -194,21 +212,31 @@ class FloatingWidgetService : Service() {
                             bubbleParams.x = originX + dx.toInt()
                             bubbleParams.y = originY + dy.toInt()
                             runCatching { windowManager.updateViewLayout(view, bubbleParams) }
+                            showDismissTarget()
+                            highlightDismissTarget(isOverDismissTarget())
                         }
                         return true
                     }
 
+                    MotionEvent.ACTION_CANCEL -> {
+                        hideDismissTarget()
+                        return true
+                    }
+
                     MotionEvent.ACTION_UP -> {
-                        // Un glissement ne fait que déplacer la sphère. Un appui
-                        // lance la dictée, puis la valide : c'est la coche
-                        // affichée sur la sphère qui annonce ce second rôle.
-                        if (!dragging) {
-                            view.performClick()
-                            when (state) {
-                                State.IDLE -> startRecording()
-                                State.RECORDING -> confirmRecording()
-                                State.TRANSCRIBING -> Unit
-                            }
+                        if (dragging) {
+                            val dropped = isOverDismissTarget()
+                            hideDismissTarget()
+                            if (dropped) hideBubble()
+                            return true
+                        }
+                        // Un appui lance la dictée, puis la valide : c'est la
+                        // coche affichée sur la sphère qui annonce ce second rôle.
+                        view.performClick()
+                        when (state) {
+                            State.IDLE -> startRecording()
+                            State.RECORDING -> confirmRecording()
+                            State.TRANSCRIBING -> Unit
                         }
                         return true
                     }
@@ -219,6 +247,78 @@ class FloatingWidgetService : Service() {
 
         bubbleView = bubble
         runCatching { windowManager.addView(bubble, bubbleParams) }
+    }
+
+    /**
+     * Corbeille qui apparaît en bas de l'écran dès qu'on déplace la sphère :
+     * y déposer la sphère la fait disparaître. Elle ne reçoit jamais le
+     * toucher elle-même (FLAG_NOT_TOUCHABLE) — c'est la position de la sphère
+     * au moment du relâchement qui décide, sinon la cible intercepterait le
+     * glissement en cours.
+     */
+    private fun buildDismissTarget(): View =
+        TextView(this).apply {
+            text = "✕"
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#CC2A1520"))
+                setStroke(dp(2), Color.parseColor("#FF9BB0"))
+            }
+        }
+
+    private fun showDismissTarget() {
+        if (dismissAttached) return
+        val target = dismissView ?: buildDismissTarget().also { dismissView = it }
+        dismissParams.width = dp(56)
+        dismissParams.height = dp(56)
+        dismissParams.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        dismissParams.y = dp(DISMISS_MARGIN_DP)
+        runCatching { windowManager.addView(target, dismissParams) }
+            .onSuccess { dismissAttached = true }
+    }
+
+    private fun hideDismissTarget() {
+        val target = dismissView
+        if (target != null && dismissAttached) {
+            runCatching { windowManager.removeView(target) }
+        }
+        dismissAttached = false
+        dismissView?.scaleX = 1f
+        dismissView?.scaleY = 1f
+    }
+
+    private fun highlightDismissTarget(near: Boolean) {
+        val scale = if (near) 1.25f else 1f
+        dismissView?.scaleX = scale
+        dismissView?.scaleY = scale
+    }
+
+    /** Vrai si le centre de la sphère est assez proche de la corbeille. */
+    private fun isOverDismissTarget(): Boolean {
+        val metrics = resources.displayMetrics
+        val targetCenterX = metrics.widthPixels / 2f
+        val targetCenterY = metrics.heightPixels - dp(DISMISS_MARGIN_DP) - dp(28)
+
+        val bubbleCenterX = bubbleParams.x + bubbleParams.width / 2f
+        val bubbleCenterY = bubbleParams.y + bubbleParams.height / 2f
+
+        return hypot(bubbleCenterX - targetCenterX, bubbleCenterY - targetCenterY) < dp(80)
+    }
+
+    private fun hideBubble() {
+        bubbleView?.let { runCatching { windowManager.removeView(it) } }
+        bubbleHidden = true
+        Toast.makeText(this, "Widget masqué — secoue le téléphone pour le rappeler", Toast.LENGTH_LONG).show()
+    }
+
+    private fun showBubble() {
+        val bubble = bubbleView ?: return
+        if (!bubbleHidden) return
+        runCatching { windowManager.addView(bubble, bubbleParams) }
+            .onSuccess { bubbleHidden = false }
     }
 
     /**
@@ -409,7 +509,11 @@ class FloatingWidgetService : Service() {
     private fun registerShakeDetector() {
         val manager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager ?: return
         val accelerometer = manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return
-        val detector = ShakeDetector { if (state == State.IDLE) startRecording() }
+        val detector = ShakeDetector {
+            // Secouer rappelle d'abord la sphère si elle a été rangée ; sinon
+            // cela lance directement la dictée.
+            if (bubbleHidden) showBubble() else if (state == State.IDLE) startRecording()
+        }
         manager.registerListener(detector, accelerometer, SensorManager.SENSOR_DELAY_UI)
         sensorManager = manager
         shakeDetector = detector
@@ -448,5 +552,6 @@ class FloatingWidgetService : Service() {
         private const val CHANNEL_ID = "chuchote_floating_widget"
         private const val NOTIFICATION_ID = 4711
         private const val TRANSCRIPTION_TIMEOUT_MS = 120_000L
+        private const val DISMISS_MARGIN_DP = 96
     }
 }
