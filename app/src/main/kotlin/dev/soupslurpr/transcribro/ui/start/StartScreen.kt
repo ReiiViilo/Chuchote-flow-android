@@ -265,11 +265,8 @@ fun StartScreen() {
                     Modifier.padding(16.dp)
                 ) {
                     Text(
-                        "If you want other apps that use the user-selected voice input app to use Transcribro," +
-                                " you need to grant Transcribro Microphone access " +
-                                "(make sure to select \"While using the app\" or it won't work properly), and then select " +
-                                "Transcribro Speech Recognition Service as the voice input app in settings." +
-                                " Go to System > Languages > Voice input, and then make sure Transcribro Speech Recognition Service is selected as the voice input app.",
+                        "Le micro est indispensable : c'est lui qui permet de dicter. " +
+                                "Choisir « Pendant l'utilisation de l'app » suffit.",
                     )
                     Spacer(Modifier.padding(8.dp))
                     FilledTonalButton(
@@ -278,21 +275,23 @@ fun StartScreen() {
                             microphonePermissionState.launchPermissionRequest()
                         }
                     ) {
-                        Text("Grant microphone permission (make sure to select \"While using the app\")")
-                    }
-                    Spacer(Modifier.padding(4.dp))
-                    FilledTonalButton(
-                        enabled = microphonePermissionState.status.isGranted,
-                        onClick = {
-                            val intent = Intent(Settings.ACTION_SETTINGS)
-                            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                            context.startActivity(intent)
-                        }
-                    ) {
-                        Text("Open settings (Navigate to System > Language & region > Speech > Voice input)")
+                        Text(
+                            if (microphonePermissionState.status.isGranted) {
+                                "Micro autorisé ✓"
+                            } else {
+                                "Autoriser le micro"
+                            }
+                        )
                     }
                     Spacer(Modifier.padding(8.dp))
-                    Text("If you already selected Transcribro as the voice input app, please ignore this.")
+                    Text(
+                        "Le réglage système « application de saisie vocale » (Système > Langues > " +
+                                "Saisie vocale) n'est pas nécessaire : le widget et le clavier de Chuchote " +
+                                "s'adressent directement à leur propre moteur de transcription. Beaucoup " +
+                                "d'appareils, dont les Samsung, ne permettent d'ailleurs pas d'y choisir une " +
+                                "application tierce. Ce réglage ne concerne que les autres apps qui demandent " +
+                                "la saisie vocale du système, comme le bouton micro du clavier d'origine."
+                    )
                 }
             }
         }
