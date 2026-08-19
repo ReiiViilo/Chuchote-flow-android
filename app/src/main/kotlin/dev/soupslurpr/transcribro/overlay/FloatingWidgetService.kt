@@ -64,7 +64,9 @@ class FloatingWidgetService : Service() {
     private var orbView: OrbView? = null
     private var panelView: View? = null
     private var waveView: SineWaveView? = null
+    private var cancelView: View? = null
     private var statusView: TextView? = null
+    private var panelOnLeft = true
 
     private var speechRecognizer: SpeechRecognizer? = null
     private var sensorManager: SensorManager? = null
@@ -354,7 +356,7 @@ class FloatingWidgetService : Service() {
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        val cancel = TextView(this).apply {
+        cancelView = TextView(this).apply {
             text = "✕"
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
@@ -366,30 +368,54 @@ class FloatingWidgetService : Service() {
             }
             setOnClickListener { cancelRecording() }
         }
-        row.addView(cancel, LinearLayout.LayoutParams(dp(32), dp(32)))
 
-        val wave = SineWaveView(this)
-        waveView = wave
-        row.addView(
-            wave,
-            LinearLayout.LayoutParams(0, dp(34), 1f).apply { marginStart = dp(10) }
-        )
+        waveView = SineWaveView(this)
 
-        val status = TextView(this).apply {
+        statusView = TextView(this).apply {
             setTextColor(Color.parseColor("#9FE8E0"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             gravity = Gravity.CENTER_VERTICAL
             visibility = View.GONE
         }
-        statusView = status
-        row.addView(
-            status,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = dp(10)
-            }
-        )
 
         return row
+    }
+
+    /**
+     * Range la croix et le tracé selon le côté où le panneau se trouve.
+     *
+     * L'ordre est toujours le même vu depuis la sphère : le tracé lui est
+     * adjacent, la croix se place à l'extérieur. Quand le panneau passe à
+     * droite, l'ensemble est donc lu en miroir plutôt que simplement déplacé.
+     */
+    private fun layoutPanel(onLeft: Boolean) {
+        val row = panelView as? LinearLayout ?: return
+        val cancel = cancelView ?: return
+        val wave = waveView ?: return
+        val status = statusView ?: return
+
+        row.removeAllViews()
+
+        val cancelParams = LinearLayout.LayoutParams(dp(32), dp(32))
+        val waveParams = LinearLayout.LayoutParams(0, dp(34), 1f)
+        val statusParams = LinearLayout.LayoutParams(
+            0,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            1f
+        )
+
+        if (onLeft) {
+            waveParams.marginStart = dp(10)
+            statusParams.marginStart = dp(10)
+            row.addView(cancel, cancelParams)
+            row.addView(wave, waveParams)
+            row.addView(status, statusParams)
+        } else {
+            cancelParams.marginStart = dp(10)
+            row.addView(wave, waveParams)
+            row.addView(status, statusParams)
+            row.addView(cancel, cancelParams)
+        }
     }
 
     private fun showPanel() {
@@ -404,19 +430,28 @@ class FloatingWidgetService : Service() {
     }
 
     /**
-     * La croix et le tracé restent sur la même ligne horizontale que la sphère,
-     * et toujours à sa gauche. Le bornage de la sphère garantit qu'il y a
-     * toujours la place : le panneau ne change donc jamais de côté, ce qui
-     * évitait de devoir chercher la croix des yeux à chaque dictée.
+     * La croix et le tracé restent sur la même ligne horizontale que la sphère.
+     * Ils se déploient à sa gauche quand la place le permet, sinon à sa droite —
+     * et dans ce cas leur ordre est inversé pour que le tracé reste toujours du
+     * côté de la sphère.
      */
     private fun positionPanelBesideOrb() {
-        panelParams.x = bubbleParams.x - dp(PANEL_WIDTH_DP) - dp(PANEL_GAP_DP)
+        val panelWidth = dp(PANEL_WIDTH_DP)
+        val gap = dp(PANEL_GAP_DP)
+        val onTheLeft = bubbleParams.x - panelWidth - gap
+
+        val fitsOnLeft = onTheLeft >= dp(4)
+        panelParams.x = if (fitsOnLeft) onTheLeft else bubbleParams.x + bubbleParams.width + gap
         panelParams.y = bubbleParams.y + (bubbleParams.height - dp(PANEL_HEIGHT_DP)) / 2
+
+        if (fitsOnLeft != panelOnLeft || (panelView as? LinearLayout)?.childCount == 0) {
+            panelOnLeft = fitsOnLeft
+            layoutPanel(fitsOnLeft)
+        }
     }
 
-    // La sphère ne peut ni sortir de l'écran, ni s'approcher assez du bord
-    // gauche pour que le panneau n'ait plus de place.
-    private fun minBubbleX(): Int = dp(PANEL_WIDTH_DP) + dp(PANEL_GAP_DP) + dp(4)
+    // La sphère ne peut pas sortir de l'écran.
+    private fun minBubbleX(): Int = dp(4)
 
     private fun maxBubbleX(): Int =
         resources.displayMetrics.widthPixels - dp(BUBBLE_SIZE_DP) - dp(4)
