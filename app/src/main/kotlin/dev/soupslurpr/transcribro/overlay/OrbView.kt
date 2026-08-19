@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
@@ -30,6 +31,17 @@ class OrbView(context: Context) : View(context) {
         style = Paint.Style.STROKE
         color = Color.parseColor("#8FA0FF")
     }
+
+    // Coche affichée sur la sphère pendant la dictée : elle indique que toucher
+    // la sphère valide et lance la transcription.
+    private val checkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+        color = Color.WHITE
+    }
+
+    private val checkPath = Path()
 
     private val ringBounds = RectF()
 
@@ -67,6 +79,15 @@ class OrbView(context: Context) : View(context) {
         val centerY = h / 2f
         coreRadius = min(w, h) / 2f * 0.62f
         ringPaint.strokeWidth = coreRadius * 0.09f
+        checkPaint.strokeWidth = coreRadius * 0.17f
+
+        // La coche est construite une fois pour toutes, en coordonnées absolues :
+        // la recalculer à chaque image n'apporterait rien, sa taille ne dépend
+        // que de celle de la vue.
+        checkPath.reset()
+        checkPath.moveTo(centerX - coreRadius * 0.34f, centerY + coreRadius * 0.02f)
+        checkPath.lineTo(centerX - coreRadius * 0.08f, centerY + coreRadius * 0.28f)
+        checkPath.lineTo(centerX + coreRadius * 0.36f, centerY - coreRadius * 0.26f)
 
         // Les dégradés sont construits ici plutôt que dans onDraw : en allouer
         // un par image provoquerait un ramasse-miettes visible à l'écran.
@@ -131,6 +152,10 @@ class OrbView(context: Context) : View(context) {
             highlightPaint
         )
         canvas.restore()
+
+        // Dessinée hors de la déformation : une coche étirée deviendrait
+        // illisible au moment où l'utilisateur en a le plus besoin.
+        if (active) canvas.drawPath(checkPath, checkPaint)
 
         if (active) postInvalidateOnAnimation()
     }

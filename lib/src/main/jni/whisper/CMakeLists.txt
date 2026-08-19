@@ -56,8 +56,15 @@ function(build_library target_name)
         set(GGML_COMPILE_OPTIONS                      -mfpu=neon-vfpv4)
     endif ()
 
+    # -O3 y compris en Debug : les APK publiés par ce dépôt sont des builds
+    # debug (aucune clé de signature de release), et sans optimisation
+    # l'inférence Whisper est si lente sur téléphone que la dictée en devient
+    # inutilisable. Les target_compile_options sont placées après les
+    # CMAKE_C_FLAGS_DEBUG sur la ligne de commande, donc ce -O3 l'emporte sur
+    # le -O0 qu'ajoute la configuration Debug.
+    target_compile_options(${target_name} PRIVATE -O3)
+
     if (NOT ${CMAKE_BUILD_TYPE} STREQUAL "Debug")
-        target_compile_options(${target_name} PRIVATE -O3)
         target_compile_options(${target_name} PRIVATE -fvisibility=hidden -fvisibility-inlines-hidden)
         target_compile_options(${target_name} PRIVATE -ffunction-sections -fdata-sections)
 
