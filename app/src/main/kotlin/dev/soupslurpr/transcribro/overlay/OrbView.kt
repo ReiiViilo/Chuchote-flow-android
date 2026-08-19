@@ -4,46 +4,57 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RadialGradient
-import android.graphics.RectF
 import android.graphics.Shader
 import android.view.View
+import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.min
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
- * La bulle du widget : une sphère en lévitation, entourée d'anneaux orbitaux.
+ * La bulle du widget : un nuage de points en suspension, qui tourne sur
+ * lui-même comme un amas d'étoiles.
  *
- * Au repos elle est immobile — c'est délibéré, une fenêtre superposée qui se
- * redessine en continu réveille le GPU en permanence et vide la batterie.
- * Dès que la dictée commence, la sphère s'anime : elle s'étire et s'aplatit au
- * rythme de la voix, et les anneaux tournent d'autant plus vite que le niveau
- * sonore est élevé.
+ * Les points sont répartis sur une sphère puis projetés en deux dimensions.
+ * Ceux qui passent devant sont dessinés plus gros, plus clairs et par-dessus
+ * les autres : c'est cette différence de profondeur qui donne le volume, là où
+ * des anneaux dessinés à plat auraient toujours l'air posés derrière.
+ *
+ * Au repos le nuage est immobile — une fenêtre superposée qui se redessine en
+ * continu réveille le GPU en permanence. Pendant la dictée il tourne, respire
+ * au rythme de la voix, et porte la coche de validation.
  */
 class OrbView(context: Context) : View(context) {
 
-    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val pointPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val corePaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val highlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(190, 235, 245, 255)
-    }
-    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+
+    private val checkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = Color.parseColor("#8FA0FF")
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+        color = Color.WHITE
     }
+    private val checkPath = Path()
 
-    private val ringBounds = RectF()
+    // Positions des points sur la sphère unité, calculées une seule fois.
+    private val pointX = FloatArray(POINT_COUNT)
+    private val pointY = FloatArray(POINT_COUNT)
+    private val pointZ = FloatArray(POINT_COUNT)
 
-    /** Niveau affiché, lissé pour éviter les à-coups d'une image à l'autre. */
     private var level = 0f
     private var targetLevel = 0f
-
-    /** Angle de rotation des anneaux, en degrés. */
     private var phase = 0f
-
     private var active = false
-    private var coreRadius = 0f
+    private var radius = 0f
 
-    /** Démarre ou arrête l'animation. */
+    init {
+        buildSphere()
+    }
+
     fun setActive(value: Boolean) {
         if (active == value) return
         active = value
@@ -54,9 +65,25 @@ class OrbView(context: Context) : View(context) {
         postInvalidateOnAnimation()
     }
 
-    /** Alimente la déformation avec le niveau du micro, en dB. */
     fun setLevel(db: Float) {
         targetLevel = ((db + 60f) / 60f).coerceIn(0f, 1f)
+    }
+
+    /**
+     * Répartition en spirale dorée : elle éparpille les points de façon
+     * régulière sur toute la sphère, alors qu'un tirage au hasard laisserait
+     * des paquets et des trous bien visibles à ce nombre de points.
+     */
+    private fun buildSphere() {
+        val goldenAngle = (PI * (3.0 - sqrt(5.0))).toFloat()
+        for (i in 0 until POINT_COUNT) {
+            val y = 1f - 2f * (i + 0.5f) / POINT_COUNT
+            val ringRadius = sqrt((1f - y * y).coerceAtLeast(0f))
+            val theta = goldenAngle * i
+            pointX[i] = cos(theta) * ringRadius
+            pointY[i] = y
+            pointZ[i] = sin(theta) * ringRadius
+        }
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -65,34 +92,24 @@ class OrbView(context: Context) : View(context) {
 
         val centerX = w / 2f
         val centerY = h / 2f
-        coreRadius = min(w, h) / 2f * 0.62f
-        ringPaint.strokeWidth = coreRadius * 0.09f
+        radius = min(w, h) / 2f * 0.66f
 
-        // Les dégradés sont construits ici plutôt que dans onDraw : en allouer
-        // un par image provoquerait un ramasse-miettes visible à l'écran.
-        glowPaint.shader = RadialGradient(
+        checkPaint.strokeWidth = radius * 0.16f
+        checkPath.reset()
+        checkPath.moveTo(centerX - radius * 0.32f, centerY + radius * 0.02f)
+        checkPath.lineTo(centerX - radius * 0.08f, centerY + radius * 0.26f)
+        checkPath.lineTo(centerX + radius * 0.34f, centerY - radius * 0.24f)
+
+        // Halo central : il donne au nuage un cœur lumineux, ce qui le fait
+        // lire comme une étoile plutôt que comme une simple constellation.
+        corePaint.shader = RadialGradient(
             centerX,
             centerY,
-            coreRadius * 1.85f,
+            radius * 1.15f,
             intArrayOf(
-                Color.argb(120, 124, 124, 240),
-                Color.argb(40, 124, 124, 240),
-                Color.argb(0, 124, 124, 240)
-            ),
-            floatArrayOf(0f, 0.55f, 1f),
-            Shader.TileMode.CLAMP
-        )
-
-        // Source lumineuse décalée en haut à gauche : c'est ce décalage qui
-        // donne le relief d'une sphère plutôt que d'un disque.
-        corePaint.shader = RadialGradient(
-            centerX - coreRadius * 0.35f,
-            centerY - coreRadius * 0.4f,
-            coreRadius * 1.6f,
-            intArrayOf(
-                Color.parseColor("#B9E4FF"),
-                Color.parseColor("#5B5BD6"),
-                Color.parseColor("#191937")
+                Color.argb(150, 150, 220, 255),
+                Color.argb(60, 110, 130, 245),
+                Color.argb(0, 90, 90, 210)
             ),
             floatArrayOf(0f, 0.45f, 1f),
             Shader.TileMode.CLAMP
@@ -101,68 +118,71 @@ class OrbView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        if (coreRadius <= 0f) return
+        if (radius <= 0f) return
 
         level += (targetLevel - level) * SMOOTHING
-        if (active) {
-            phase += ROTATION_DEGREES_AT_REST + ROTATION_DEGREES_PER_LEVEL * level
-            if (phase >= 360f) phase -= 360f
-        }
+        if (active) phase += ROTATION_AT_REST + ROTATION_PER_LEVEL * level
 
         val centerX = width / 2f
         val centerY = height / 2f
 
-        // Conservation approximative du volume : ce que la sphère gagne en
-        // largeur, elle le perd en hauteur, comme une goutte qui vibre.
-        val stretch = 1f + 0.20f * level
-        val squash = 1f - 0.13f * level
+        // Le nuage respire : il enfle avec la voix et les points s'écartent.
+        val breathing = radius * (0.88f + 0.22f * level)
 
-        canvas.drawCircle(centerX, centerY, coreRadius * 1.85f, glowPaint)
+        canvas.drawCircle(centerX, centerY, radius * 1.15f, corePaint)
 
-        drawRings(canvas, centerX, centerY, stretch, squash)
+        val cosPhase = cos(phase)
+        val sinPhase = sin(phase)
+        val cosTilt = cos(TILT)
+        val sinTilt = sin(TILT)
 
-        canvas.save()
-        canvas.scale(stretch, squash, centerX, centerY)
-        canvas.drawCircle(centerX, centerY, coreRadius, corePaint)
-        canvas.drawCircle(
-            centerX - coreRadius * 0.34f,
-            centerY - coreRadius * 0.38f,
-            coreRadius * 0.16f,
-            highlightPaint
-        )
-        canvas.restore()
+        // Deux passes : d'abord l'arrière, ensuite l'avant. Trier les points à
+        // chaque image coûterait plus cher que ce découpage, et le rendu est
+        // indiscernable à ce nombre de points.
+        for (pass in 0..1) {
+            for (i in 0 until POINT_COUNT) {
+                val x = pointX[i]
+                val y = pointY[i]
+                val z = pointZ[i]
+
+                // Rotation autour de l'axe vertical, puis basculement de l'axe
+                // pour qu'on ne regarde pas le nuage pile par l'équateur.
+                val rotatedX = x * cosPhase + z * sinPhase
+                val rotatedZ = -x * sinPhase + z * cosPhase
+                val tiltedY = y * cosTilt - rotatedZ * sinTilt
+                val depth = y * sinTilt + rotatedZ * cosTilt
+
+                val isFront = depth >= 0f
+                if ((pass == 0) == isFront) continue
+
+                // depth va de -1 (au fond) à 1 (au premier plan).
+                val nearness = (depth + 1f) / 2f
+
+                pointPaint.color = if (isFront) FRONT_COLOR else BACK_COLOR
+                pointPaint.alpha = (55 + 200 * nearness).toInt().coerceIn(0, 255)
+
+                canvas.drawCircle(
+                    centerX + rotatedX * breathing,
+                    centerY + tiltedY * breathing,
+                    radius * (0.030f + 0.055f * nearness) * (1f + 0.5f * level),
+                    pointPaint
+                )
+            }
+        }
+
+        if (active) canvas.drawPath(checkPath, checkPaint)
 
         if (active) postInvalidateOnAnimation()
     }
 
-    private fun drawRings(canvas: Canvas, centerX: Float, centerY: Float, stretch: Float, squash: Float) {
-        for (index in 0 until RING_COUNT) {
-            // Vitesses et inclinaisons différentes par anneau : sans ça, les
-            // trois ellipses tourneraient comme un bloc rigide.
-            val angle = phase * (1f + index * 0.4f) + index * 55f
-            val radiusX = coreRadius * (1.12f + 0.15f * index) * stretch
-            val radiusY = coreRadius * (0.30f + 0.14f * index) * squash
-
-            ringBounds.set(
-                centerX - radiusX,
-                centerY - radiusY,
-                centerX + radiusX,
-                centerY + radiusY
-            )
-
-            ringPaint.alpha = (70 + 110 * level).toInt().coerceIn(0, 255)
-
-            canvas.save()
-            canvas.rotate(angle, centerX, centerY)
-            canvas.drawOval(ringBounds, ringPaint)
-            canvas.restore()
-        }
-    }
-
     companion object {
-        private const val RING_COUNT = 3
+        private const val POINT_COUNT = 110
         private const val SMOOTHING = 0.22f
-        private const val ROTATION_DEGREES_AT_REST = 1.4f
-        private const val ROTATION_DEGREES_PER_LEVEL = 9f
+        private const val ROTATION_AT_REST = 0.010f
+        private const val ROTATION_PER_LEVEL = 0.055f
+        private const val TILT = 0.42f
+
+        private val FRONT_COLOR = Color.rgb(150, 245, 255)
+        private val BACK_COLOR = Color.rgb(120, 120, 240)
     }
 }

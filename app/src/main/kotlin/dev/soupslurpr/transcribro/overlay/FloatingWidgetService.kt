@@ -19,7 +19,9 @@ import android.graphics.drawable.GradientDrawable
 import android.hardware.Sensor
 import android.hardware.SensorManager
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -37,12 +39,16 @@ import dev.soupslurpr.transcribro.MainActivity
 import dev.soupslurpr.transcribro.R
 import dev.soupslurpr.transcribro.recognitionservice.MainRecognitionService
 import kotlin.math.abs
+import kotlin.math.hypot
 
 /**
- * Widget de dictée flottant, à la manière de Wispr Flow : une bulle posée
+ * Widget de dictée flottant, à la manière de Wispr Flow : une sphère posée
  * par-dessus toutes les applications, qu'on touche (ou qu'on appelle en
- * secouant le téléphone) pour dicter, avec un niveau sonore en direct et une
- * confirmation explicite avant que le texte soit inséré.
+ * secouant le téléphone) pour dicter.
+ *
+ * Pendant la dictée la sphère porte une coche — la toucher valide — et une
+ * petite pastille apparaît en bas avec le signal sonore et une croix pour
+ * annuler.
  *
  * Service de premier plan de type micro : c'est ce qui autorise la capture
  * audio alors que l'application n'est pas à l'écran.
@@ -56,15 +62,32 @@ class FloatingWidgetService : Service() {
     private var bubbleView: View? = null
     private var orbView: OrbView? = null
     private var panelView: View? = null
-    private var waveformView: WaveformView? = null
+    private var waveView: SineWaveView? = null
     private var statusView: TextView? = null
 
     private var speechRecognizer: SpeechRecognizer? = null
     private var sensorManager: SensorManager? = null
     private var shakeDetector: ShakeDetector? = null
 
+    private var dismissView: View? = null
+    private var dismissAttached = false
+    private var bubbleHidden = false
+
     private var state = State.IDLE
     private var panelAttached = false
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * Filet de sécurité : si la transcription ne rend jamais la main, le widget
+     * resterait bloqué sur « Transcription… » sans aucun moyen d'en sortir.
+     */
+    private val transcriptionTimeout = Runnable {
+        if (state != State.TRANSCRIBING) return@Runnable
+        speechRecognizer?.cancel()
+        resetToIdle()
+        Toast.makeText(this, "Transcription trop longue, dictée abandonnée", Toast.LENGTH_LONG).show()
+    }
 
     private val bubbleParams = WindowManager.LayoutParams(
         WindowManager.LayoutParams.WRAP_CONTENT,
@@ -78,10 +101,19 @@ class FloatingWidgetService : Service() {
     )
 
     private val panelParams = WindowManager.LayoutParams(
-        WindowManager.LayoutParams.MATCH_PARENT,
+        WindowManager.LayoutParams.WRAP_CONTENT,
         WindowManager.LayoutParams.WRAP_CONTENT,
         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+        PixelFormat.TRANSLUCENT
+    )
+
+    private val dismissParams = WindowManager.LayoutParams(
+        WindowManager.LayoutParams.WRAP_CONTENT,
+        WindowManager.LayoutParams.WRAP_CONTENT,
+        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
         PixelFormat.TRANSLUCENT
     )
 
@@ -114,10 +146,15 @@ class FloatingWidgetService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        // Relancer le widget depuis l'application le fait réapparaître s'il
+        // avait été glissé dans la corbeille.
+        if (bubbleHidden) showBubble()
         return START_STICKY
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacks(transcriptionTimeout)
+
         sensorManager?.unregisterListener(shakeDetector)
         shakeDetector = null
 
@@ -126,6 +163,7 @@ class FloatingWidgetService : Service() {
         speechRecognizer = null
 
         hidePanel()
+        hideDismissTarget()
         bubbleView?.let { runCatching { windowManager.removeView(it) } }
         bubbleView = null
         orbView = null
@@ -174,16 +212,31 @@ class FloatingWidgetService : Service() {
                             bubbleParams.x = originX + dx.toInt()
                             bubbleParams.y = originY + dy.toInt()
                             runCatching { windowManager.updateViewLayout(view, bubbleParams) }
+                            showDismissTarget()
+                            highlightDismissTarget(isOverDismissTarget())
                         }
                         return true
                     }
 
+                    MotionEvent.ACTION_CANCEL -> {
+                        hideDismissTarget()
+                        return true
+                    }
+
                     MotionEvent.ACTION_UP -> {
-                        // Un simple appui lance la dictée ; un glissement ne fait
-                        // que déplacer la bulle.
-                        if (!dragging) {
-                            view.performClick()
-                            startRecording()
+                        if (dragging) {
+                            val dropped = isOverDismissTarget()
+                            hideDismissTarget()
+                            if (dropped) hideBubble()
+                            return true
+                        }
+                        // Un appui lance la dictée, puis la valide : c'est la
+                        // coche affichée sur la sphère qui annonce ce second rôle.
+                        view.performClick()
+                        when (state) {
+                            State.IDLE -> startRecording()
+                            State.RECORDING -> confirmRecording()
+                            State.TRANSCRIBING -> Unit
                         }
                         return true
                     }
@@ -196,91 +249,138 @@ class FloatingWidgetService : Service() {
         runCatching { windowManager.addView(bubble, bubbleParams) }
     }
 
-    private fun buildPanel(): View {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(12), dp(16), dp(12))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(20).toFloat()
-                setColor(Color.parseColor("#F01B1B3A"))
-                setStroke(dp(1), Color.parseColor("#7C7CF0"))
-            }
-        }
-
-        val status = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            gravity = Gravity.CENTER
-        }
-        statusView = status
-        root.addView(
-            status,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-        )
-
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-
-        row.addView(
-            circleButton("✕", "#3A1B2A", "#F07C9A") { cancelRecording() },
-            LinearLayout.LayoutParams(dp(44), dp(44))
-        )
-
-        val waveform = WaveformView(this)
-        waveformView = waveform
-        row.addView(
-            waveform,
-            LinearLayout.LayoutParams(0, dp(44), 1f).apply {
-                marginStart = dp(12)
-                marginEnd = dp(12)
-            }
-        )
-
-        row.addView(
-            circleButton("✓", "#1B3A2A", "#7CF0B0") { confirmRecording() },
-            LinearLayout.LayoutParams(dp(44), dp(44))
-        )
-
-        root.addView(
-            row,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(8) }
-        )
-
-        return root
-    }
-
-    private fun circleButton(
-        label: String,
-        fillColor: String,
-        strokeColor: String,
-        onClick: () -> Unit
-    ): TextView =
+    /**
+     * Corbeille qui apparaît en bas de l'écran dès qu'on déplace la sphère :
+     * y déposer la sphère la fait disparaître. Elle ne reçoit jamais le
+     * toucher elle-même (FLAG_NOT_TOUCHABLE) — c'est la position de la sphère
+     * au moment du relâchement qui décide, sinon la cible intercepterait le
+     * glissement en cours.
+     */
+    private fun buildDismissTarget(): View =
         TextView(this).apply {
-            text = label
+            text = "✕"
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(Color.parseColor(fillColor))
-                setStroke(dp(2), Color.parseColor(strokeColor))
+                setColor(Color.parseColor("#CC2A1520"))
+                setStroke(dp(2), Color.parseColor("#FF9BB0"))
             }
-            setOnClickListener { onClick() }
         }
+
+    private fun showDismissTarget() {
+        if (dismissAttached) return
+        val target = dismissView ?: buildDismissTarget().also { dismissView = it }
+        dismissParams.width = dp(56)
+        dismissParams.height = dp(56)
+        dismissParams.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        dismissParams.y = dp(DISMISS_MARGIN_DP)
+        runCatching { windowManager.addView(target, dismissParams) }
+            .onSuccess { dismissAttached = true }
+    }
+
+    private fun hideDismissTarget() {
+        val target = dismissView
+        if (target != null && dismissAttached) {
+            runCatching { windowManager.removeView(target) }
+        }
+        dismissAttached = false
+        dismissView?.scaleX = 1f
+        dismissView?.scaleY = 1f
+    }
+
+    private fun highlightDismissTarget(near: Boolean) {
+        val scale = if (near) 1.25f else 1f
+        dismissView?.scaleX = scale
+        dismissView?.scaleY = scale
+    }
+
+    /** Vrai si le centre de la sphère est assez proche de la corbeille. */
+    private fun isOverDismissTarget(): Boolean {
+        val metrics = resources.displayMetrics
+        val targetCenterX = metrics.widthPixels / 2f
+        val targetCenterY = metrics.heightPixels - dp(DISMISS_MARGIN_DP) - dp(28)
+
+        val bubbleCenterX = bubbleParams.x + bubbleParams.width / 2f
+        val bubbleCenterY = bubbleParams.y + bubbleParams.height / 2f
+
+        return hypot(bubbleCenterX - targetCenterX, bubbleCenterY - targetCenterY) < dp(80)
+    }
+
+    private fun hideBubble() {
+        bubbleView?.let { runCatching { windowManager.removeView(it) } }
+        bubbleHidden = true
+        Toast.makeText(this, "Widget masqué — secoue le téléphone pour le rappeler", Toast.LENGTH_LONG).show()
+    }
+
+    private fun showBubble() {
+        val bubble = bubbleView ?: return
+        if (!bubbleHidden) return
+        runCatching { windowManager.addView(bubble, bubbleParams) }
+            .onSuccess { bubbleHidden = false }
+    }
+
+    /**
+     * Pastille compacte : croix d'annulation et signal sonore, rien de plus.
+     * Elle est volontairement étroite et centrée plutôt qu'étalée sur toute la
+     * largeur, pour masquer le moins possible de l'écran pendant la dictée.
+     */
+    private fun buildPanel(): View {
+        val pill = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(8), dp(18), dp(8))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(26).toFloat()
+                setColor(Color.parseColor("#E60E0E24"))
+                setStroke(dp(1), Color.parseColor("#3A2EE6D6"))
+            }
+        }
+
+        val cancel = TextView(this).apply {
+            text = "✕"
+            gravity = Gravity.CENTER
+            setTextColor(Color.parseColor("#FF9BB0"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#2A1520"))
+            }
+            setOnClickListener { cancelRecording() }
+        }
+        pill.addView(cancel, LinearLayout.LayoutParams(dp(34), dp(34)))
+
+        val wave = SineWaveView(this)
+        waveView = wave
+        pill.addView(
+            wave,
+            LinearLayout.LayoutParams(dp(150), dp(34)).apply { marginStart = dp(12) }
+        )
+
+        val status = TextView(this).apply {
+            setTextColor(Color.parseColor("#9FE8E0"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+        }
+        statusView = status
+        pill.addView(
+            status,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = dp(12) }
+        )
+
+        return pill
+    }
 
     private fun showPanel() {
         if (panelAttached) return
         val panel = panelView ?: buildPanel().also { panelView = it }
-        panelParams.gravity = Gravity.BOTTOM
-        panelParams.y = dp(48)
+        panelParams.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        panelParams.y = dp(56)
         runCatching { windowManager.addView(panel, panelParams) }
             .onSuccess { panelAttached = true }
     }
@@ -314,10 +414,11 @@ class FloatingWidgetService : Service() {
             speechRecognizer = it
         }
 
-        waveformView?.reset()
-        orbView?.setActive(true)
         showPanel()
-        statusView?.text = "Parle, puis touche ✓"
+        waveView?.setActive(true)
+        statusView?.visibility = View.GONE
+        waveView?.visibility = View.VISIBLE
+        orbView?.setActive(true)
         state = State.RECORDING
 
         recognizer.startListening(Intent().apply {
@@ -331,13 +432,26 @@ class FloatingWidgetService : Service() {
     private fun confirmRecording() {
         if (state != State.RECORDING) return
         state = State.TRANSCRIBING
+
+        waveView?.setActive(false)
+        waveView?.visibility = View.GONE
         statusView?.text = "Transcription…"
+        statusView?.visibility = View.VISIBLE
+        orbView?.setActive(false)
+
         speechRecognizer?.stopListening()
+        mainHandler.postDelayed(transcriptionTimeout, TRANSCRIPTION_TIMEOUT_MS)
     }
 
     private fun cancelRecording() {
         speechRecognizer?.cancel()
+        resetToIdle()
+    }
+
+    private fun resetToIdle() {
+        mainHandler.removeCallbacks(transcriptionTimeout)
         state = State.IDLE
+        waveView?.setActive(false)
         orbView?.setActive(false)
         hidePanel()
     }
@@ -348,7 +462,7 @@ class FloatingWidgetService : Service() {
         override fun onBeginningOfSpeech() {}
 
         override fun onRmsChanged(rmsdB: Float) {
-            waveformView?.addLevel(rmsdB)
+            waveView?.setLevel(rmsdB)
             orbView?.setLevel(rmsdB)
         }
 
@@ -357,9 +471,7 @@ class FloatingWidgetService : Service() {
         override fun onEndOfSpeech() {}
 
         override fun onError(error: Int) {
-            state = State.IDLE
-            orbView?.setActive(false)
-            hidePanel()
+            resetToIdle()
             val message = when (error) {
                 SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Autorisation du micro refusée"
                 SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Reconnaissance déjà en cours"
@@ -370,9 +482,7 @@ class FloatingWidgetService : Service() {
         }
 
         override fun onResults(results: Bundle?) {
-            state = State.IDLE
-            orbView?.setActive(false)
-            hidePanel()
+            resetToIdle()
             val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
             if (!text.isNullOrBlank()) deliver(text)
         }
@@ -399,7 +509,11 @@ class FloatingWidgetService : Service() {
     private fun registerShakeDetector() {
         val manager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager ?: return
         val accelerometer = manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return
-        val detector = ShakeDetector { startRecording() }
+        val detector = ShakeDetector {
+            // Secouer rappelle d'abord la sphère si elle a été rangée ; sinon
+            // cela lance directement la dictée.
+            if (bubbleHidden) showBubble() else if (state == State.IDLE) startRecording()
+        }
         manager.registerListener(detector, accelerometer, SensorManager.SENSOR_DELAY_UI)
         sensorManager = manager
         shakeDetector = detector
@@ -437,5 +551,7 @@ class FloatingWidgetService : Service() {
 
         private const val CHANNEL_ID = "chuchote_floating_widget"
         private const val NOTIFICATION_ID = 4711
+        private const val TRANSCRIPTION_TIMEOUT_MS = 120_000L
+        private const val DISMISS_MARGIN_DP = 96
     }
 }

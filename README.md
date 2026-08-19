@@ -43,7 +43,9 @@ Peu importe l'appareil où tu dictes, tout aboutit au même historique, avec les
 
 ## Le widget flottant
 
-Une bulle reste posée par-dessus toutes les applications. On la touche (ou on secoue le téléphone) pour lancer la dictée : un panneau s'ouvre en bas de l'écran avec le niveau sonore en direct, puis **✓** transcrit et insère le texte dans le champ de saisie actif, **✕** annule.
+Un nuage de points en suspension reste posé par-dessus toutes les applications. On le touche (ou on secoue le téléphone) pour lancer la dictée : un panneau s'ouvre en bas de l'écran avec le niveau sonore en direct, puis **✓** transcrit et insère le texte dans le champ de saisie actif, **✕** annule.
+
+**Ranger le widget** : le glisser vers la corbeille qui apparaît en bas de l'écran. Il disparaît alors complètement ; secouer le téléphone le rappelle.
 
 Activation en trois étapes depuis l'écran d'accueil de l'app :
 
