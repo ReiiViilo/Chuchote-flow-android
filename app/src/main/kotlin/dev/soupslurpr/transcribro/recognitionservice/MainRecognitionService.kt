@@ -21,6 +21,7 @@ import dev.soupslurpr.transcribro.recognitionservice.silerovad.SileroVadLocalDat
 import dev.soupslurpr.transcribro.recognitionservice.silerovad.SileroVadRepository
 import dev.soupslurpr.transcribro.recognitionservice.whisper.WhisperApi
 import dev.soupslurpr.transcribro.recognitionservice.whisper.WhisperLocalDataSource
+import dev.soupslurpr.transcribro.memory.ChuchoteStore
 import dev.soupslurpr.transcribro.recognitionservice.whisper.WhisperRepository
 import dev.soupslurpr.transcribro.remote.RemoteTranscriber
 import kotlinx.coroutines.CoroutineScope
@@ -64,6 +65,10 @@ class MainRecognitionService : RecognitionService() {
     private var stopListening by mutableStateOf(false)
 
     private val transcribeJobs = mutableListOf<Job>()
+
+    // Différé : un initialiseur de champ s'exécute avant que le contexte du
+    // service ne soit attaché.
+    private val store by lazy { ChuchoteStore.get(this) }
 
     private val whisperRepository: WhisperRepository =
         WhisperRepository(
@@ -336,7 +341,7 @@ class MainRecognitionService : RecognitionService() {
                                         .toShortArray(),
                                 )
 
-                            transcription.text = transcriptionText
+                            transcription.text = store.appliquerCorrections(transcriptionText)
 
                             totalTranscriptionTime += currentTimeMillis() - timeBeforeTranscription
 
@@ -408,7 +413,7 @@ class MainRecognitionService : RecognitionService() {
                                                         ))..((transcription.end!!.toInt()).coerceAtMost(transcription.audioData.size - 1))
                                                     )
                                                         .toShortArray(),
-                                                )
+                                                ).let { store.appliquerCorrections(it) }
 
                                             totalTranscriptionTime += currentTimeMillis() - timeBeforeTranscription
 
@@ -479,6 +484,10 @@ class MainRecognitionService : RecognitionService() {
             }
 
             val transcription = transcriptions.toSortedMap().values.joinToString { it.text ?: "" }
+
+            // Chaque dictée aboutie rejoint l'historique local, pour pouvoir
+            // la retrouver et la copier depuis l'application.
+            store.ajouterDictee(transcription)
 
             val bundle = Bundle().apply {
                 putStringArrayList(

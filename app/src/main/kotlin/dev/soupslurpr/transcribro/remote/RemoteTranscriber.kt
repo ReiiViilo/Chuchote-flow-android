@@ -2,6 +2,7 @@ package dev.soupslurpr.transcribro.remote
 
 import android.content.Context
 import android.util.Log
+import dev.soupslurpr.transcribro.memory.ChuchoteStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -24,6 +25,7 @@ class RemoteTranscriber(context: Context) {
     // service, avant que le contexte ne soit attaché. Lire les préférences à ce
     // moment-là échouerait ; garder la référence, non.
     private val settings by lazy { RemoteTranscriptionSettings(context) }
+    private val store by lazy { ChuchoteStore.get(context) }
 
     suspend fun transcribe(pcm: ShortArray, sampleRate: Int): String? {
         if (!settings.isUsable || pcm.isEmpty()) return null
@@ -61,6 +63,17 @@ class RemoteTranscriber(context: Context) {
                 out.writeBytes("--$BOUNDARY\r\n")
                 out.writeBytes("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
                 out.writeBytes("fr\r\n")
+
+                // Les mots du dictionnaire personnel guident le modèle vers
+                // les bons noms propres. writeBytes tronquerait les accents à
+                // un octet par caractère, d'où l'écriture explicite en UTF-8.
+                val vocabulaire = store.motsPourBiais()
+                if (vocabulaire.isNotEmpty()) {
+                    out.writeBytes("--$BOUNDARY\r\n")
+                    out.writeBytes("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n")
+                    out.write(vocabulaire.toByteArray(Charsets.UTF_8))
+                    out.writeBytes("\r\n")
+                }
 
                 out.writeBytes("--$BOUNDARY--\r\n")
             }
