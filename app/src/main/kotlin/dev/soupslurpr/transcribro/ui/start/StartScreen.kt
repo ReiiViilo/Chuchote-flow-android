@@ -3,6 +3,7 @@ package dev.soupslurpr.transcribro.ui.start
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.provider.Settings
 import android.view.inputmethod.InputMethodManager
 import androidx.compose.foundation.Image
@@ -42,6 +43,7 @@ import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import dev.soupslurpr.transcribro.R
+import dev.soupslurpr.transcribro.overlay.FloatingWidgetService
 import dev.soupslurpr.transcribro.ui.reusablecomposables.ScreenLazyColumn
 import java.time.LocalDateTime
 import kotlin.random.Random
@@ -63,10 +65,19 @@ fun StartScreen() {
         )
     }
 
+    var canDrawOverlays by rememberSaveable {
+        mutableStateOf(
+            Settings.canDrawOverlays(context)
+        )
+    }
+
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_START) {
                 isMyInputMethodEnabled = isMyInputMethodEnabled(context)
+                // Les autorisations se donnent dans les réglages système : il
+                // faut donc les relire au retour dans l'application.
+                canDrawOverlays = Settings.canDrawOverlays(context)
             }
         }
 
@@ -148,6 +159,69 @@ fun StartScreen() {
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center
                 )
+            }
+        }
+        item {
+            ElevatedCard {
+                Column(
+                    Modifier.padding(16.dp)
+                ) {
+                    Text(
+                        "Widget de dictée flottant : une bulle posée par-dessus toutes les applications. " +
+                                "Touche-la — ou secoue le téléphone — parle, puis confirme avec ✓. " +
+                                "Le texte s'insère dans le champ de saisie actif."
+                    )
+                    Spacer(Modifier.padding(8.dp))
+                    FilledTonalButton(
+                        enabled = !canDrawOverlays,
+                        onClick = {
+                            val intent = Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:" + context.packageName)
+                            )
+                            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            context.startActivity(intent)
+                        }
+                    ) {
+                        Text("1. Autoriser l'affichage par-dessus les autres apps")
+                    }
+                    Spacer(Modifier.padding(4.dp))
+                    FilledTonalButton(
+                        onClick = {
+                            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            context.startActivity(intent)
+                        }
+                    ) {
+                        Text("2. Activer Chuchote Flow dans Accessibilité")
+                    }
+                    Spacer(Modifier.padding(4.dp))
+                    FilledTonalButton(
+                        enabled = canDrawOverlays && microphonePermissionState.status.isGranted,
+                        onClick = {
+                            context.startForegroundService(
+                                Intent(context, FloatingWidgetService::class.java)
+                            )
+                        }
+                    ) {
+                        Text("3. Démarrer le widget")
+                    }
+                    Spacer(Modifier.padding(4.dp))
+                    FilledTonalButton(
+                        onClick = {
+                            context.stopService(
+                                Intent(context, FloatingWidgetService::class.java)
+                            )
+                        }
+                    ) {
+                        Text("Arrêter le widget")
+                    }
+                    Spacer(Modifier.padding(8.dp))
+                    Text(
+                        "Sans l'étape 2, le texte dicté est déposé dans le presse-papiers " +
+                                "au lieu d'être écrit directement."
+                    )
+                }
             }
         }
         item {

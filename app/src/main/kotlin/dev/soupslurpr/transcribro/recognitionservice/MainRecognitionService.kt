@@ -30,6 +30,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.lang.System.currentTimeMillis
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.log10
+import kotlin.math.sqrt
 
 private data class Transcription(
     val audioData: MutableList<Short> = mutableListOf(),
@@ -41,6 +43,9 @@ private data class Transcription(
 class MainRecognitionService : RecognitionService() {
     companion object {
         const val EXTRA_AUTO_STOP = "dev.soupslurpr.transcribro.EXTRA_AUTO_STOP"
+
+        /** Niveau publié quand le bloc audio est parfaitement silencieux. */
+        private const val SILENCE_DB = -60f
     }
 
     private val recordAndTranscribeScope = CoroutineScope(Dispatchers.IO)
@@ -262,6 +267,25 @@ class MainRecognitionService : RecognitionService() {
                         transcriptions[transcriptionIndex] = Transcription(start = null, end = null, text = null)
                     }
                     transcriptions[transcriptionIndex]!!.audioData.add(buffer[i])
+                }
+
+                // Niveau sonore du bloc qu'on vient de lire, publié pour les
+                // interfaces qui affichent la voix en direct (widget flottant).
+                // Il est calculé ici parce qu'un second AudioRecord échouerait :
+                // le micro n'est capturable que par un seul client à la fois.
+                if (numberOfShorts > 0) {
+                    var sumOfSquares = 0.0
+                    for (i in 0 until numberOfShorts) {
+                        val sample = buffer[i].toDouble()
+                        sumOfSquares += sample * sample
+                    }
+                    val rms = sqrt(sumOfSquares / numberOfShorts)
+                    val decibels = if (rms > 0.0) {
+                        (20 * log10(rms / Short.MAX_VALUE.toDouble())).toFloat()
+                    } else {
+                        SILENCE_DB
+                    }
+                    listener?.rmsChanged(decibels)
                 }
 
                 if (!isActive) {

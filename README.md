@@ -39,7 +39,19 @@ Peu importe l'appareil où tu dictes, tout aboutit au même historique, avec les
 1. **Fondation** ✅ : import de Transcribro, build APK automatique par GitHub Actions, transcription en français
 2. **Nettoyage LLM** : la même étape de post-traitement que le desktop — les prompts « Chuchote — Nettoyage (FR-QC) » et « Reformulation (FR-QC) » appliqués à la transcription avant insertion (API ou serveur local)
 3. **Synchronisation** : historique des dictées poussé vers le cerveau commun (Supabase), partagé avec le desktop
-4. **Bulle flottante** : le widget persistant façon Wispr Flow — superposition par-dessus n'importe quelle app, vignette avec waveform en temps réel, déclenchement par secousse, insertion du texte dans le champ actif
+4. **Bulle flottante** ✅ : le widget persistant façon Wispr Flow — superposition par-dessus n'importe quelle app, vignette avec niveau sonore en temps réel, déclenchement par secousse, confirmation explicite, insertion du texte dans le champ actif
+
+## Le widget flottant
+
+Une bulle reste posée par-dessus toutes les applications. On la touche (ou on secoue le téléphone) pour lancer la dictée : un panneau s'ouvre en bas de l'écran avec le niveau sonore en direct, puis **✓** transcrit et insère le texte dans le champ de saisie actif, **✕** annule.
+
+Activation en trois étapes depuis l'écran d'accueil de l'app :
+
+1. **Affichage par-dessus les autres apps** — pour la bulle elle-même.
+2. **Accessibilité** — c'est le seul mécanisme Android qui permet d'écrire dans le champ d'une autre application. Sans cette étape le widget fonctionne quand même, mais dépose le texte dans le presse-papiers au lieu de l'écrire.
+3. **Démarrer le widget** — il tourne comme service de premier plan (notification permanente), ce qui est la condition pour capter le micro hors de l'app.
+
+Détails d'implémentation : la fenêtre du widget est volontairement non focalisable, sinon elle volerait le focus au champ où le texte doit atterrir. La reconnaissance vise directement `MainRecognitionService` via `SpeechRecognizer`, ce qui évite de dépendre du réglage système « application de saisie vocale » — inaccessible sur certains appareils Samsung. Le niveau sonore est calculé dans la boucle de capture existante et publié par `rmsChanged` : un second `AudioRecord` échouerait, le micro n'acceptant qu'un client à la fois.
 
 ## Installer
 
