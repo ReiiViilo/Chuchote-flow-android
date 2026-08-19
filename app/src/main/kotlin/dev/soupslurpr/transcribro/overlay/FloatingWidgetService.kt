@@ -54,6 +54,7 @@ class FloatingWidgetService : Service() {
     private lateinit var windowManager: WindowManager
 
     private var bubbleView: View? = null
+    private var orbView: OrbView? = null
     private var panelView: View? = null
     private var waveformView: WaveformView? = null
     private var statusView: TextView? = null
@@ -127,6 +128,7 @@ class FloatingWidgetService : Service() {
         hidePanel()
         bubbleView?.let { runCatching { windowManager.removeView(it) } }
         bubbleView = null
+        orbView = null
 
         super.onDestroy()
     }
@@ -134,20 +136,13 @@ class FloatingWidgetService : Service() {
     // --- Interface flottante ---------------------------------------------
 
     private fun addBubble() {
-        val bubble = TextView(this).apply {
-            text = "🎤"
-            gravity = Gravity.CENTER
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
-            val side = dp(56)
-            minWidth = side
-            minHeight = side
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#1B1B3A"))
-                setStroke(dp(2), Color.parseColor("#7C7CF0"))
-            }
-        }
+        val bubble = OrbView(this)
+        orbView = bubble
 
+        // Une vue dessinée sur mesure n'a pas de taille intrinsèque : sans
+        // dimensions explicites, WRAP_CONTENT la réduirait à zéro pixel.
+        bubbleParams.width = dp(64)
+        bubbleParams.height = dp(64)
         bubbleParams.gravity = Gravity.TOP or Gravity.START
         bubbleParams.x = dp(16)
         bubbleParams.y = dp(240)
@@ -320,6 +315,7 @@ class FloatingWidgetService : Service() {
         }
 
         waveformView?.reset()
+        orbView?.setActive(true)
         showPanel()
         statusView?.text = "Parle, puis touche ✓"
         state = State.RECORDING
@@ -342,6 +338,7 @@ class FloatingWidgetService : Service() {
     private fun cancelRecording() {
         speechRecognizer?.cancel()
         state = State.IDLE
+        orbView?.setActive(false)
         hidePanel()
     }
 
@@ -352,6 +349,7 @@ class FloatingWidgetService : Service() {
 
         override fun onRmsChanged(rmsdB: Float) {
             waveformView?.addLevel(rmsdB)
+            orbView?.setLevel(rmsdB)
         }
 
         override fun onBufferReceived(buffer: ByteArray?) {}
@@ -360,6 +358,7 @@ class FloatingWidgetService : Service() {
 
         override fun onError(error: Int) {
             state = State.IDLE
+            orbView?.setActive(false)
             hidePanel()
             val message = when (error) {
                 SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Autorisation du micro refusée"
@@ -372,6 +371,7 @@ class FloatingWidgetService : Service() {
 
         override fun onResults(results: Bundle?) {
             state = State.IDLE
+            orbView?.setActive(false)
             hidePanel()
             val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
             if (!text.isNullOrBlank()) deliver(text)
