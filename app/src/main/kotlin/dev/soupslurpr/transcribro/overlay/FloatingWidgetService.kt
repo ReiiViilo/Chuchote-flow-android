@@ -181,10 +181,12 @@ class FloatingWidgetService : Service() {
 
         // Une vue dessinée sur mesure n'a pas de taille intrinsèque : sans
         // dimensions explicites, WRAP_CONTENT la réduirait à zéro pixel.
-        bubbleParams.width = dp(64)
-        bubbleParams.height = dp(64)
+        bubbleParams.width = dp(BUBBLE_SIZE_DP)
+        bubbleParams.height = dp(BUBBLE_SIZE_DP)
         bubbleParams.gravity = Gravity.TOP or Gravity.START
-        bubbleParams.x = dp(16)
+        // À droite au départ : la croix et le tracé se déploient vers la
+        // gauche, il leur faut la place.
+        bubbleParams.x = maxBubbleX()
         bubbleParams.y = dp(240)
 
         val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
@@ -211,8 +213,10 @@ class FloatingWidgetService : Service() {
                         val dy = event.rawY - downRawY
                         if (abs(dx) > touchSlop || abs(dy) > touchSlop) dragging = true
                         if (dragging) {
-                            bubbleParams.x = originX + dx.toInt()
-                            bubbleParams.y = originY + dy.toInt()
+                            bubbleParams.x = (originX + dx.toInt())
+                                .coerceIn(minBubbleX(), maxBubbleX())
+                            bubbleParams.y = (originY + dy.toInt())
+                                .coerceIn(minBubbleY(), maxBubbleY())
                             runCatching { windowManager.updateViewLayout(view, bubbleParams) }
                             updatePanelPosition()
                             showDismissTarget()
@@ -401,21 +405,26 @@ class FloatingWidgetService : Service() {
 
     /**
      * La croix et le tracé restent sur la même ligne horizontale que la sphère,
-     * à sa gauche — ou à sa droite si la sphère est collée au bord gauche, pour
-     * qu'ils ne sortent jamais de l'écran.
+     * et toujours à sa gauche. Le bornage de la sphère garantit qu'il y a
+     * toujours la place : le panneau ne change donc jamais de côté, ce qui
+     * évitait de devoir chercher la croix des yeux à chaque dictée.
      */
     private fun positionPanelBesideOrb() {
-        val panelWidth = dp(PANEL_WIDTH_DP)
-        val gap = dp(8)
-        val onTheLeft = bubbleParams.x - panelWidth - gap
-
-        panelParams.x = if (onTheLeft >= dp(4)) {
-            onTheLeft
-        } else {
-            bubbleParams.x + bubbleParams.width + gap
-        }
+        panelParams.x = bubbleParams.x - dp(PANEL_WIDTH_DP) - dp(PANEL_GAP_DP)
         panelParams.y = bubbleParams.y + (bubbleParams.height - dp(PANEL_HEIGHT_DP)) / 2
     }
+
+    // La sphère ne peut ni sortir de l'écran, ni s'approcher assez du bord
+    // gauche pour que le panneau n'ait plus de place.
+    private fun minBubbleX(): Int = dp(PANEL_WIDTH_DP) + dp(PANEL_GAP_DP) + dp(4)
+
+    private fun maxBubbleX(): Int =
+        resources.displayMetrics.widthPixels - dp(BUBBLE_SIZE_DP) - dp(4)
+
+    private fun minBubbleY(): Int = dp(28)
+
+    private fun maxBubbleY(): Int =
+        resources.displayMetrics.heightPixels - dp(BUBBLE_SIZE_DP) - dp(28)
 
     private fun updatePanelPosition() {
         if (!panelAttached) return
@@ -593,7 +602,9 @@ class FloatingWidgetService : Service() {
         private const val DISMISS_MARGIN_DP = 96
         private const val DISMISS_WINDOW_DP = 96
         private const val DISMISS_CIRCLE_DP = 56
-        private const val PANEL_WIDTH_DP = 186
+        private const val BUBBLE_SIZE_DP = 64
+        private const val PANEL_WIDTH_DP = 130
+        private const val PANEL_GAP_DP = 8
         private const val PANEL_HEIGHT_DP = 44
     }
 }

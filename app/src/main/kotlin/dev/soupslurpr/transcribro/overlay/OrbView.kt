@@ -32,6 +32,11 @@ class OrbView(context: Context) : View(context) {
     private val pointPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val corePaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
+    // Fond sombre posé derrière le nuage. Le halo lumineux seul se perdait sur
+    // un fond clair ou bleu : ce disque assombri garantit un contraste quel que
+    // soit l'écran par-dessus lequel le widget flotte.
+    private val backdropPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
     private val checkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
@@ -66,7 +71,10 @@ class OrbView(context: Context) : View(context) {
     }
 
     fun setLevel(db: Float) {
-        targetLevel = ((db + 60f) / 60f).coerceIn(0f, 1f)
+        // Même seuil de bruit que le tracé : sans lui le nuage frémissait dans
+        // le silence, ce qui laissait croire qu'il captait la voix.
+        val normalized = ((db - NOISE_FLOOR_DB) / (0f - NOISE_FLOOR_DB)).coerceIn(0f, 1f)
+        targetLevel = if (normalized <= GATE) 0f else (normalized - GATE) / (1f - GATE)
     }
 
     /**
@@ -100,6 +108,19 @@ class OrbView(context: Context) : View(context) {
         checkPath.lineTo(centerX - radius * 0.08f, centerY + radius * 0.26f)
         checkPath.lineTo(centerX + radius * 0.34f, centerY - radius * 0.24f)
 
+        backdropPaint.shader = RadialGradient(
+            centerX,
+            centerY,
+            radius * 1.5f,
+            intArrayOf(
+                Color.argb(170, 8, 8, 22),
+                Color.argb(120, 8, 8, 22),
+                Color.argb(0, 8, 8, 22)
+            ),
+            floatArrayOf(0f, 0.62f, 1f),
+            Shader.TileMode.CLAMP
+        )
+
         // Halo central : il donne au nuage un cœur lumineux, ce qui le fait
         // lire comme une étoile plutôt que comme une simple constellation.
         corePaint.shader = RadialGradient(
@@ -107,8 +128,8 @@ class OrbView(context: Context) : View(context) {
             centerY,
             radius * 1.15f,
             intArrayOf(
-                Color.argb(150, 150, 220, 255),
-                Color.argb(60, 110, 130, 245),
+                Color.argb(215, 175, 235, 255),
+                Color.argb(110, 120, 140, 250),
                 Color.argb(0, 90, 90, 210)
             ),
             floatArrayOf(0f, 0.45f, 1f),
@@ -129,6 +150,7 @@ class OrbView(context: Context) : View(context) {
         // Le nuage respire : il enfle avec la voix et les points s'écartent.
         val breathing = radius * (0.88f + 0.22f * level)
 
+        canvas.drawCircle(centerX, centerY, radius * 1.5f, backdropPaint)
         canvas.drawCircle(centerX, centerY, radius * 1.15f, corePaint)
 
         val cosPhase = cos(phase)
@@ -181,6 +203,8 @@ class OrbView(context: Context) : View(context) {
         private const val ROTATION_AT_REST = 0.010f
         private const val ROTATION_PER_LEVEL = 0.055f
         private const val TILT = 0.42f
+        private const val NOISE_FLOOR_DB = -45f
+        private const val GATE = 0.22f
 
         private val FRONT_COLOR = Color.rgb(150, 245, 255)
         private val BACK_COLOR = Color.rgb(120, 120, 240)
