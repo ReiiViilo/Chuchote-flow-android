@@ -54,7 +54,12 @@ class OrbView(context: Context) : View(context) {
     private var targetLevel = 0f
     private var phase = 0f
     private var active = false
+    private var transcribing = false
+    private var pulse = 0f
     private var radius = 0f
+
+    private val animating: Boolean
+        get() = active || transcribing
 
     init {
         buildSphere()
@@ -67,6 +72,18 @@ class OrbView(context: Context) : View(context) {
             targetLevel = 0f
             level = 0f
         }
+        postInvalidateOnAnimation()
+    }
+
+    /**
+     * Mode attente : pendant la transcription, le nuage respire de lui-même.
+     * C'est lui qui porte l'attente, ce qui évite de garder à l'écran une
+     * pastille dont les commandes n'ont plus cours une fois la dictée validée.
+     */
+    fun setTranscribing(value: Boolean) {
+        if (transcribing == value) return
+        transcribing = value
+        pulse = 0f
         postInvalidateOnAnimation()
     }
 
@@ -142,21 +159,33 @@ class OrbView(context: Context) : View(context) {
         if (radius <= 0f) return
 
         level += (targetLevel - level) * SMOOTHING
-        if (active) phase += ROTATION_AT_REST + ROTATION_PER_LEVEL * level
+        if (animating) phase += ROTATION_AT_REST + ROTATION_PER_LEVEL * level
+        if (transcribing) pulse += PULSE_STEP
 
         val centerX = width / 2f
         val centerY = height / 2f
 
-        // Le nuage respire : il enfle avec la voix et les points s'écartent.
-        val breathing = radius * (0.88f + 0.22f * level)
+        // Pendant l'attente, les points s'écartent et se resserrent pendant que
+        // le cœur fait l'inverse : le noyau reste dense quand la couronne se
+        // déploie, ce qui donne une respiration plutôt qu'un simple grossissement.
+        val swell = if (transcribing) sin(pulse) else 0f
+        val breathing = radius * (0.88f + 0.22f * level + 0.26f * swell)
+        val coreScale = 1f - 0.30f * swell
 
         canvas.drawCircle(centerX, centerY, radius * 1.5f, backdropPaint)
-        canvas.drawCircle(centerX, centerY, radius * 1.15f, corePaint)
+        canvas.drawCircle(centerX, centerY, radius * 1.15f * coreScale, corePaint)
 
         val cosPhase = cos(phase)
         val sinPhase = sin(phase)
         val cosTilt = cos(TILT)
         val sinTilt = sin(TILT)
+
+        // Étirement en contre-phase : ce que le nuage gagne en largeur, il le
+        // perd en hauteur, comme une goutte qui vibre.
+        if (transcribing) {
+            canvas.save()
+            canvas.scale(1f + 0.09f * swell, 1f - 0.09f * swell, centerX, centerY)
+        }
 
         // Deux passes : d'abord l'arrière, ensuite l'avant. Trier les points à
         // chaque image coûterait plus cher que ce découpage, et le rendu est
@@ -192,9 +221,13 @@ class OrbView(context: Context) : View(context) {
             }
         }
 
-        if (active) canvas.drawPath(checkPath, checkPaint)
+        if (transcribing) canvas.restore()
 
-        if (active) postInvalidateOnAnimation()
+        // La coche n'a plus lieu d'être une fois la dictée validée : il n'y a
+        // plus rien à confirmer pendant la transcription.
+        if (active && !transcribing) canvas.drawPath(checkPath, checkPaint)
+
+        if (animating) postInvalidateOnAnimation()
     }
 
     companion object {
@@ -205,6 +238,7 @@ class OrbView(context: Context) : View(context) {
         private const val TILT = 0.42f
         private const val NOISE_FLOOR_DB = -45f
         private const val GATE = 0.22f
+        private const val PULSE_STEP = 0.075f
 
         private val FRONT_COLOR = Color.rgb(150, 245, 255)
         private val BACK_COLOR = Color.rgb(120, 120, 240)

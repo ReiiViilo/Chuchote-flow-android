@@ -65,7 +65,6 @@ class FloatingWidgetService : Service() {
     private var panelView: View? = null
     private var waveView: SineWaveView? = null
     private var cancelView: View? = null
-    private var progressView: ProgressBarView? = null
     private var panelOnLeft = true
 
     private var speechRecognizer: SpeechRecognizer? = null
@@ -391,10 +390,6 @@ class FloatingWidgetService : Service() {
 
         waveView = SineWaveView(this)
 
-        progressView = ProgressBarView(this).apply {
-            visibility = View.GONE
-        }
-
         return row
     }
 
@@ -409,27 +404,19 @@ class FloatingWidgetService : Service() {
         val row = panelView as? LinearLayout ?: return
         val cancel = cancelView ?: return
         val wave = waveView ?: return
-        val progress = progressView ?: return
 
         row.removeAllViews()
 
         val cancelParams = LinearLayout.LayoutParams(dp(32), dp(32))
-        // Le tracé et la barre ont exactement la même largeur : la pastille
-        // garde ainsi la même longueur pendant et après la dictée, sans vide
-        // entre la barre et la sphère.
         val waveParams = LinearLayout.LayoutParams(dp(CONTENT_WIDTH_DP), dp(34))
-        val progressParams = LinearLayout.LayoutParams(dp(CONTENT_WIDTH_DP), dp(34))
 
         if (onLeft) {
             waveParams.marginStart = dp(10)
-            progressParams.marginStart = dp(10)
             row.addView(cancel, cancelParams)
             row.addView(wave, waveParams)
-            row.addView(progress, progressParams)
         } else {
             cancelParams.marginStart = dp(10)
             row.addView(wave, waveParams)
-            row.addView(progress, progressParams)
             row.addView(cancel, cancelParams)
         }
     }
@@ -515,8 +502,6 @@ class FloatingWidgetService : Service() {
         showPanel()
         waveView?.setActive(true)
         waveView?.visibility = View.VISIBLE
-        progressView?.setActive(false)
-        progressView?.visibility = View.GONE
         orbView?.setActive(true)
         state = State.RECORDING
 
@@ -532,11 +517,13 @@ class FloatingWidgetService : Service() {
         if (state != State.RECORDING) return
         state = State.TRANSCRIBING
 
+        // La dictée est validée : le tracé et la croix n'ont plus d'objet, il
+        // n'y a plus rien à annuler ni à montrer de la voix. C'est la sphère
+        // qui porte seule l'attente.
         waveView?.setActive(false)
-        waveView?.visibility = View.GONE
-        progressView?.visibility = View.VISIBLE
-        progressView?.setActive(true)
+        hidePanel()
         orbView?.setActive(false)
+        orbView?.setTranscribing(true)
 
         speechRecognizer?.stopListening()
         mainHandler.postDelayed(transcriptionTimeout, TRANSCRIPTION_TIMEOUT_MS)
@@ -551,8 +538,8 @@ class FloatingWidgetService : Service() {
         mainHandler.removeCallbacks(transcriptionTimeout)
         state = State.IDLE
         waveView?.setActive(false)
-        progressView?.setActive(false)
         orbView?.setActive(false)
+        orbView?.setTranscribing(false)
         hidePanel()
     }
 
