@@ -45,7 +45,15 @@ class SineWaveView(context: Context) : View(context) {
     }
 
     fun setLevel(db: Float) {
-        targetLevel = ((db + 60f) / 60f).coerceIn(0f, 1f)
+        // Seuil de bruit : un micro de téléphone dans une pièce silencieuse
+        // capte tout de même du souffle autour de -50 dB. Sans ce plancher, le
+        // tracé s'agitait alors que personne ne parlait.
+        val normalized = ((db - NOISE_FLOOR_DB) / (0f - NOISE_FLOOR_DB)).coerceIn(0f, 1f)
+        targetLevel = if (normalized <= GATE) {
+            0f
+        } else {
+            (normalized - GATE) / (1f - GATE)
+        }
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -79,9 +87,10 @@ class SineWaveView(context: Context) : View(context) {
         if (active) phase += PHASE_STEP
 
         val centerY = h / 2f
-        // Un minimum d'amplitude au repos : un trait parfaitement plat donnerait
-        // l'impression que le widget ne capte rien.
-        val amplitude = h * (0.06f + 0.38f * level)
+        // Un souffle d'amplitude au repos : un trait parfaitement plat donnerait
+        // l'impression que le widget ne capte rien, mais il reste discret pour
+        // qu'on distingue nettement le silence de la parole.
+        val amplitude = h * (0.03f + 0.42f * level)
         val waveNumber = (2.0 * PI * WAVE_CYCLES / w).toFloat()
 
         wavePath.reset()
@@ -109,5 +118,7 @@ class SineWaveView(context: Context) : View(context) {
         private const val WAVE_CYCLES = 2.6
         private const val SECONDARY_RATIO = 2.3f
         private const val STEP_PX = 3f
+        private const val NOISE_FLOOR_DB = -45f
+        private const val GATE = 0.22f
     }
 }

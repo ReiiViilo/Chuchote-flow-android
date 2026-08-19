@@ -64,7 +64,9 @@ class FloatingWidgetService : Service() {
     private var orbView: OrbView? = null
     private var panelView: View? = null
     private var waveView: SineWaveView? = null
+    private var cancelView: View? = null
     private var statusView: TextView? = null
+    private var panelOnLeft = true
 
     private var speechRecognizer: SpeechRecognizer? = null
     private var sensorManager: SensorManager? = null
@@ -181,10 +183,12 @@ class FloatingWidgetService : Service() {
 
         // Une vue dessinée sur mesure n'a pas de taille intrinsèque : sans
         // dimensions explicites, WRAP_CONTENT la réduirait à zéro pixel.
-        bubbleParams.width = dp(64)
-        bubbleParams.height = dp(64)
+        bubbleParams.width = dp(BUBBLE_SIZE_DP)
+        bubbleParams.height = dp(BUBBLE_SIZE_DP)
         bubbleParams.gravity = Gravity.TOP or Gravity.START
-        bubbleParams.x = dp(16)
+        // À droite au départ : la croix et le tracé se déploient vers la
+        // gauche, il leur faut la place.
+        bubbleParams.x = maxBubbleX()
         bubbleParams.y = dp(240)
 
         val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
@@ -211,8 +215,10 @@ class FloatingWidgetService : Service() {
                         val dy = event.rawY - downRawY
                         if (abs(dx) > touchSlop || abs(dy) > touchSlop) dragging = true
                         if (dragging) {
-                            bubbleParams.x = originX + dx.toInt()
-                            bubbleParams.y = originY + dy.toInt()
+                            bubbleParams.x = (originX + dx.toInt())
+                                .coerceIn(minBubbleX(), maxBubbleX())
+                            bubbleParams.y = (originY + dy.toInt())
+                                .coerceIn(minBubbleY(), maxBubbleY())
                             runCatching { windowManager.updateViewLayout(view, bubbleParams) }
                             updatePanelPosition()
                             showDismissTarget()
@@ -350,7 +356,7 @@ class FloatingWidgetService : Service() {
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        val cancel = TextView(this).apply {
+        cancelView = TextView(this).apply {
             text = "✕"
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
@@ -362,30 +368,54 @@ class FloatingWidgetService : Service() {
             }
             setOnClickListener { cancelRecording() }
         }
-        row.addView(cancel, LinearLayout.LayoutParams(dp(32), dp(32)))
 
-        val wave = SineWaveView(this)
-        waveView = wave
-        row.addView(
-            wave,
-            LinearLayout.LayoutParams(0, dp(34), 1f).apply { marginStart = dp(10) }
-        )
+        waveView = SineWaveView(this)
 
-        val status = TextView(this).apply {
+        statusView = TextView(this).apply {
             setTextColor(Color.parseColor("#9FE8E0"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             gravity = Gravity.CENTER_VERTICAL
             visibility = View.GONE
         }
-        statusView = status
-        row.addView(
-            status,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = dp(10)
-            }
-        )
 
         return row
+    }
+
+    /**
+     * Range la croix et le tracé selon le côté où le panneau se trouve.
+     *
+     * L'ordre est toujours le même vu depuis la sphère : le tracé lui est
+     * adjacent, la croix se place à l'extérieur. Quand le panneau passe à
+     * droite, l'ensemble est donc lu en miroir plutôt que simplement déplacé.
+     */
+    private fun layoutPanel(onLeft: Boolean) {
+        val row = panelView as? LinearLayout ?: return
+        val cancel = cancelView ?: return
+        val wave = waveView ?: return
+        val status = statusView ?: return
+
+        row.removeAllViews()
+
+        val cancelParams = LinearLayout.LayoutParams(dp(32), dp(32))
+        val waveParams = LinearLayout.LayoutParams(0, dp(34), 1f)
+        val statusParams = LinearLayout.LayoutParams(
+            0,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            1f
+        )
+
+        if (onLeft) {
+            waveParams.marginStart = dp(10)
+            statusParams.marginStart = dp(10)
+            row.addView(cancel, cancelParams)
+            row.addView(wave, waveParams)
+            row.addView(status, statusParams)
+        } else {
+            cancelParams.marginStart = dp(10)
+            row.addView(wave, waveParams)
+            row.addView(status, statusParams)
+            row.addView(cancel, cancelParams)
+        }
     }
 
     private fun showPanel() {
@@ -400,22 +430,36 @@ class FloatingWidgetService : Service() {
     }
 
     /**
-     * La croix et le tracé restent sur la même ligne horizontale que la sphère,
-     * à sa gauche — ou à sa droite si la sphère est collée au bord gauche, pour
-     * qu'ils ne sortent jamais de l'écran.
+     * La croix et le tracé restent sur la même ligne horizontale que la sphère.
+     * Ils se déploient à sa gauche quand la place le permet, sinon à sa droite —
+     * et dans ce cas leur ordre est inversé pour que le tracé reste toujours du
+     * côté de la sphère.
      */
     private fun positionPanelBesideOrb() {
         val panelWidth = dp(PANEL_WIDTH_DP)
-        val gap = dp(8)
+        val gap = dp(PANEL_GAP_DP)
         val onTheLeft = bubbleParams.x - panelWidth - gap
 
-        panelParams.x = if (onTheLeft >= dp(4)) {
-            onTheLeft
-        } else {
-            bubbleParams.x + bubbleParams.width + gap
-        }
+        val fitsOnLeft = onTheLeft >= dp(4)
+        panelParams.x = if (fitsOnLeft) onTheLeft else bubbleParams.x + bubbleParams.width + gap
         panelParams.y = bubbleParams.y + (bubbleParams.height - dp(PANEL_HEIGHT_DP)) / 2
+
+        if (fitsOnLeft != panelOnLeft || (panelView as? LinearLayout)?.childCount == 0) {
+            panelOnLeft = fitsOnLeft
+            layoutPanel(fitsOnLeft)
+        }
     }
+
+    // La sphère ne peut pas sortir de l'écran.
+    private fun minBubbleX(): Int = dp(4)
+
+    private fun maxBubbleX(): Int =
+        resources.displayMetrics.widthPixels - dp(BUBBLE_SIZE_DP) - dp(4)
+
+    private fun minBubbleY(): Int = dp(28)
+
+    private fun maxBubbleY(): Int =
+        resources.displayMetrics.heightPixels - dp(BUBBLE_SIZE_DP) - dp(28)
 
     private fun updatePanelPosition() {
         if (!panelAttached) return
@@ -593,7 +637,9 @@ class FloatingWidgetService : Service() {
         private const val DISMISS_MARGIN_DP = 96
         private const val DISMISS_WINDOW_DP = 96
         private const val DISMISS_CIRCLE_DP = 56
-        private const val PANEL_WIDTH_DP = 186
+        private const val BUBBLE_SIZE_DP = 64
+        private const val PANEL_WIDTH_DP = 130
+        private const val PANEL_GAP_DP = 8
         private const val PANEL_HEIGHT_DP = 44
     }
 }
