@@ -32,6 +32,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -70,6 +71,7 @@ class FloatingWidgetService : Service() {
     private var shakeDetector: ShakeDetector? = null
 
     private var dismissView: View? = null
+    private var dismissCircle: View? = null
     private var dismissAttached = false
     private var bubbleHidden = false
 
@@ -212,6 +214,7 @@ class FloatingWidgetService : Service() {
                             bubbleParams.x = originX + dx.toInt()
                             bubbleParams.y = originY + dy.toInt()
                             runCatching { windowManager.updateViewLayout(view, bubbleParams) }
+                            updatePanelPosition()
                             showDismissTarget()
                             highlightDismissTarget(isOverDismissTarget())
                         }
@@ -256,8 +259,8 @@ class FloatingWidgetService : Service() {
      * au moment du relâchement qui décide, sinon la cible intercepterait le
      * glissement en cours.
      */
-    private fun buildDismissTarget(): View =
-        TextView(this).apply {
+    private fun buildDismissTarget(): View {
+        val circle = TextView(this).apply {
             text = "✕"
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
@@ -268,12 +271,24 @@ class FloatingWidgetService : Service() {
                 setStroke(dp(2), Color.parseColor("#FF9BB0"))
             }
         }
+        dismissCircle = circle
+
+        // Le rond est centré dans une fenêtre nettement plus grande que lui :
+        // sinon, en grossissant à l'approche de la sphère, il déborderait des
+        // limites de sa fenêtre et se retrouverait rogné sur tous les côtés.
+        return FrameLayout(this).apply {
+            addView(
+                circle,
+                FrameLayout.LayoutParams(dp(DISMISS_CIRCLE_DP), dp(DISMISS_CIRCLE_DP), Gravity.CENTER)
+            )
+        }
+    }
 
     private fun showDismissTarget() {
         if (dismissAttached) return
         val target = dismissView ?: buildDismissTarget().also { dismissView = it }
-        dismissParams.width = dp(56)
-        dismissParams.height = dp(56)
+        dismissParams.width = dp(DISMISS_WINDOW_DP)
+        dismissParams.height = dp(DISMISS_WINDOW_DP)
         dismissParams.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
         dismissParams.y = dp(DISMISS_MARGIN_DP)
         runCatching { windowManager.addView(target, dismissParams) }
@@ -286,21 +301,21 @@ class FloatingWidgetService : Service() {
             runCatching { windowManager.removeView(target) }
         }
         dismissAttached = false
-        dismissView?.scaleX = 1f
-        dismissView?.scaleY = 1f
+        dismissCircle?.scaleX = 1f
+        dismissCircle?.scaleY = 1f
     }
 
     private fun highlightDismissTarget(near: Boolean) {
         val scale = if (near) 1.25f else 1f
-        dismissView?.scaleX = scale
-        dismissView?.scaleY = scale
+        dismissCircle?.scaleX = scale
+        dismissCircle?.scaleY = scale
     }
 
     /** Vrai si le centre de la sphère est assez proche de la corbeille. */
     private fun isOverDismissTarget(): Boolean {
         val metrics = resources.displayMetrics
         val targetCenterX = metrics.widthPixels / 2f
-        val targetCenterY = metrics.heightPixels - dp(DISMISS_MARGIN_DP) - dp(28)
+        val targetCenterY = metrics.heightPixels - dp(DISMISS_MARGIN_DP) - dp(DISMISS_WINDOW_DP) / 2f
 
         val bubbleCenterX = bubbleParams.x + bubbleParams.width / 2f
         val bubbleCenterY = bubbleParams.y + bubbleParams.height / 2f
@@ -327,62 +342,85 @@ class FloatingWidgetService : Service() {
      * largeur, pour masquer le moins possible de l'écran pendant la dictée.
      */
     private fun buildPanel(): View {
-        val pill = LinearLayout(this).apply {
+        // Aucun fond ni cadre : seuls la croix et le tracé flottent au-dessus
+        // de l'écran, pour masquer le moins possible de ce qu'on est en train
+        // de lire.
+        val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(10), dp(8), dp(18), dp(8))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(26).toFloat()
-                setColor(Color.parseColor("#E60E0E24"))
-                setStroke(dp(1), Color.parseColor("#3A2EE6D6"))
-            }
         }
 
         val cancel = TextView(this).apply {
             text = "✕"
             gravity = Gravity.CENTER
-            setTextColor(Color.parseColor("#FF9BB0"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#2A1520"))
+                setColor(Color.parseColor("#CC2A1520"))
+                setStroke(dp(1), Color.parseColor("#FF9BB0"))
             }
             setOnClickListener { cancelRecording() }
         }
-        pill.addView(cancel, LinearLayout.LayoutParams(dp(34), dp(34)))
+        row.addView(cancel, LinearLayout.LayoutParams(dp(32), dp(32)))
 
         val wave = SineWaveView(this)
         waveView = wave
-        pill.addView(
+        row.addView(
             wave,
-            LinearLayout.LayoutParams(dp(150), dp(34)).apply { marginStart = dp(12) }
+            LinearLayout.LayoutParams(0, dp(34), 1f).apply { marginStart = dp(10) }
         )
 
         val status = TextView(this).apply {
             setTextColor(Color.parseColor("#9FE8E0"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            gravity = Gravity.CENTER
+            gravity = Gravity.CENTER_VERTICAL
             visibility = View.GONE
         }
         statusView = status
-        pill.addView(
+        row.addView(
             status,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { marginStart = dp(12) }
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(10)
+            }
         )
 
-        return pill
+        return row
     }
 
     private fun showPanel() {
         if (panelAttached) return
         val panel = panelView ?: buildPanel().also { panelView = it }
-        panelParams.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-        panelParams.y = dp(56)
+        panelParams.width = dp(PANEL_WIDTH_DP)
+        panelParams.height = dp(PANEL_HEIGHT_DP)
+        panelParams.gravity = Gravity.TOP or Gravity.START
+        positionPanelBesideOrb()
         runCatching { windowManager.addView(panel, panelParams) }
             .onSuccess { panelAttached = true }
+    }
+
+    /**
+     * La croix et le tracé restent sur la même ligne horizontale que la sphère,
+     * à sa gauche — ou à sa droite si la sphère est collée au bord gauche, pour
+     * qu'ils ne sortent jamais de l'écran.
+     */
+    private fun positionPanelBesideOrb() {
+        val panelWidth = dp(PANEL_WIDTH_DP)
+        val gap = dp(8)
+        val onTheLeft = bubbleParams.x - panelWidth - gap
+
+        panelParams.x = if (onTheLeft >= dp(4)) {
+            onTheLeft
+        } else {
+            bubbleParams.x + bubbleParams.width + gap
+        }
+        panelParams.y = bubbleParams.y + (bubbleParams.height - dp(PANEL_HEIGHT_DP)) / 2
+    }
+
+    private fun updatePanelPosition() {
+        if (!panelAttached) return
+        positionPanelBesideOrb()
+        panelView?.let { runCatching { windowManager.updateViewLayout(it, panelParams) } }
     }
 
     private fun hidePanel() {
@@ -553,5 +591,9 @@ class FloatingWidgetService : Service() {
         private const val NOTIFICATION_ID = 4711
         private const val TRANSCRIPTION_TIMEOUT_MS = 120_000L
         private const val DISMISS_MARGIN_DP = 96
+        private const val DISMISS_WINDOW_DP = 96
+        private const val DISMISS_CIRCLE_DP = 56
+        private const val PANEL_WIDTH_DP = 186
+        private const val PANEL_HEIGHT_DP = 44
     }
 }

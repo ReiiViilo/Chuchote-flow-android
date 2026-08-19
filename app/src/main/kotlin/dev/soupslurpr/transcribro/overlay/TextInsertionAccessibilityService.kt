@@ -38,9 +38,31 @@ class TextInsertionAccessibilityService : AccessibilityService() {
         // Sans objet : aucune action de longue durée à interrompre.
     }
 
+    /**
+     * Cherche le champ modifiable qui a le focus.
+     *
+     * `rootInActiveWindow` ne suffit pas : quand le widget est affiché, la
+     * fenêtre « active » peut être notre propre superposition, et la recherche
+     * échoue alors alors que le champ existe bel et bien dans l'application du
+     * dessous. On balaie donc toutes les fenêtres, en ignorant les nôtres.
+     */
+    private fun findFocusedEditable(): AccessibilityNodeInfo? {
+        rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.let {
+            if (it.isEditable) return it
+        }
+
+        for (window in windows) {
+            val root = window.root ?: continue
+            if (root.packageName == packageName) continue
+            val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: continue
+            if (focused.isEditable) return focused
+        }
+
+        return null
+    }
+
     private fun insertIntoFocusedField(text: String): Boolean {
-        val focused = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
-        if (!focused.isEditable) return false
+        val focused = findFocusedEditable() ?: return false
 
         // Le collage respecte la position du curseur et la sélection en cours,
         // contrairement à ACTION_SET_TEXT qui réécrit tout le champ.

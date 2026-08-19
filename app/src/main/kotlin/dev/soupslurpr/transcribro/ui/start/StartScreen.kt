@@ -44,6 +44,7 @@ import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import dev.soupslurpr.transcribro.R
 import dev.soupslurpr.transcribro.overlay.FloatingWidgetService
+import dev.soupslurpr.transcribro.overlay.TextInsertionAccessibilityService
 import dev.soupslurpr.transcribro.ui.reusablecomposables.ScreenLazyColumn
 import java.time.LocalDateTime
 import kotlin.random.Random
@@ -71,6 +72,12 @@ fun StartScreen() {
         )
     }
 
+    var isTextInsertionEnabled by rememberSaveable {
+        mutableStateOf(
+            TextInsertionAccessibilityService.isConnected()
+        )
+    }
+
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_START) {
@@ -78,6 +85,7 @@ fun StartScreen() {
                 // Les autorisations se donnent dans les réglages système : il
                 // faut donc les relire au retour dans l'application.
                 canDrawOverlays = Settings.canDrawOverlays(context)
+                isTextInsertionEnabled = TextInsertionAccessibilityService.isConnected()
             }
         }
 
@@ -193,7 +201,13 @@ fun StartScreen() {
                             context.startActivity(intent)
                         }
                     ) {
-                        Text("2. Activer Chuchote Flow dans Accessibilité")
+                        Text(
+                            if (isTextInsertionEnabled) {
+                                "2. Accessibilité activée ✓ (rouvrir les réglages)"
+                            } else {
+                                "2. Activer Chuchote Flow dans Accessibilité"
+                            }
+                        )
                     }
                     Spacer(Modifier.padding(4.dp))
                     FilledTonalButton(
