@@ -220,13 +220,30 @@ fun SettingsStartScreen(
                     Spacer(Modifier.padding(8.dp))
                     OutlinedTextField(
                         value = remoteBaseUrl,
-                        onValueChange = {
-                            remoteBaseUrl = it
-                            remoteSettings.baseUrl = it
+                        onValueChange = { valeur ->
+                            // Un lien de configuration complet (adresse#jeton)
+                            // collé ici remplit les deux champs d'un coup —
+                            // c'est le format produit par « Partager ».
+                            if (valeur.contains('#')) {
+                                val adresse = valeur.substringBefore('#').trim()
+                                val jeton = valeur.substringAfter('#').trim()
+                                remoteBaseUrl = adresse
+                                remoteSettings.baseUrl = adresse
+                                if (jeton.isNotEmpty()) {
+                                    remoteToken = jeton
+                                    remoteSettings.token = jeton
+                                }
+                            } else {
+                                remoteBaseUrl = valeur
+                                remoteSettings.baseUrl = valeur
+                            }
                         },
                         singleLine = true,
-                        label = { Text("Adresse du relais") },
+                        label = { Text("Adresse du relais (ou lien complet)") },
                         placeholder = { Text("https://mon-relais.vercel.app") },
+                        supportingText = {
+                            Text("Astuce : colle un lien de configuration « adresse#jeton » et les deux champs se remplissent.")
+                        },
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.padding(4.dp))
@@ -240,6 +257,31 @@ fun SettingsStartScreen(
                         label = { Text("Jeton") },
                         modifier = Modifier.fillMaxWidth()
                     )
+                    if (remoteBaseUrl.isNotBlank() && remoteToken.isNotBlank()) {
+                        Spacer(Modifier.padding(4.dp))
+                        FilledTonalButton(
+                            onClick = {
+                                val lien = "${remoteBaseUrl.trim().trimEnd('/')}#${remoteToken.trim()}"
+                                val partage = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_TEXT, lien)
+                                }
+                                context.startActivity(
+                                    Intent.createChooser(partage, "Partager la configuration du relais")
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                )
+                            }
+                        ) {
+                            Text("Partager la configuration")
+                        }
+                        Spacer(Modifier.padding(2.dp))
+                        Text(
+                            "Le lien contient le jeton actuellement saisi. Pour équiper " +
+                                    "quelqu'un d'autre, saisis d'abord son jeton à lui, partage, " +
+                                    "puis remets le tien.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
                     Spacer(Modifier.padding(8.dp))
                     Text(
                         "Tant que ce réglage est désactivé, l'application n'envoie rien : " +

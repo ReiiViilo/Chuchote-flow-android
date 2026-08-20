@@ -177,12 +177,27 @@ fun HistoryScreen() {
                         )
                         Spacer(Modifier.size(4.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            // La durée affichée est le délai vécu : entre la
+                            // validation de la dictée et l'arrivée du texte.
+                            val details = buildString {
+                                append(
+                                    DateUtils.getRelativeTimeSpanString(
+                                        dictee.creeLe,
+                                        System.currentTimeMillis(),
+                                        DateUtils.MINUTE_IN_MILLIS
+                                    )
+                                )
+                                when (dictee.source) {
+                                    "relais" -> append(" · relais")
+                                    "local" -> append(" · sur l'appareil")
+                                    "mixte" -> append(" · relais + appareil")
+                                }
+                                dictee.dureeMs?.takeIf { it > 0 }?.let {
+                                    append(" · ${"%.1f".format(it / 1000f)} s")
+                                }
+                            }
                             Text(
-                                text = DateUtils.getRelativeTimeSpanString(
-                                    dictee.creeLe,
-                                    System.currentTimeMillis(),
-                                    DateUtils.MINUTE_IN_MILLIS
-                                ).toString(),
+                                text = details,
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.weight(1f)

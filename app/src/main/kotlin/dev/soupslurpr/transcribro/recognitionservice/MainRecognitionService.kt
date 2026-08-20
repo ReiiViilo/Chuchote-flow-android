@@ -70,6 +70,15 @@ class MainRecognitionService : RecognitionService() {
     // service ne soit attaché.
     private val store by lazy { ChuchoteStore.get(this) }
 
+    // D'où sont venues les transcriptions de la dictée en cours, et quand la
+    // fin de dictée a été demandée — de quoi mesurer le délai réellement vécu
+    // (entre la validation et le texte) et l'attribuer au bon chemin.
+    private val viaRelais = AtomicBoolean(false)
+    private val viaLocal = AtomicBoolean(false)
+
+    @Volatile
+    private var stopRequestedAtMs = 0L
+
     private val whisperRepository: WhisperRepository =
         WhisperRepository(
             WhisperLocalDataSource(
@@ -251,6 +260,10 @@ class MainRecognitionService : RecognitionService() {
 
         var totalTranscriptionTime = 0L
 
+        viaRelais.set(false)
+        viaLocal.set(false)
+        stopRequestedAtMs = 0L
+
         recordAndTranscribeJob = recordAndTranscribeScope.launch recordAndTranscribe@{
             audioRecord.startRecording()
             isRecording.set(true)
@@ -331,7 +344,7 @@ class MainRecognitionService : RecognitionService() {
                         val transcribeJob = transcribeScope.launch {
                             val timeBeforeTranscription = currentTimeMillis()
 
-                            val transcriptionText =
+                            val resultat =
                                 whisperRepository.transcribeAudio(
                                     transcription.audioData.slice(
                                         ((transcription.start!!.toInt() - speechStartPadMs).coerceAtLeast(
@@ -341,7 +354,8 @@ class MainRecognitionService : RecognitionService() {
                                         .toShortArray(),
                                 )
 
-                            transcription.text = store.appliquerCorrections(transcriptionText)
+                            if (resultat.viaRelais) viaRelais.set(true) else viaLocal.set(true)
+                            transcription.text = store.appliquerCorrections(resultat.texte)
 
                             totalTranscriptionTime += currentTimeMillis() - timeBeforeTranscription
 
@@ -413,7 +427,10 @@ class MainRecognitionService : RecognitionService() {
                                                         ))..((transcription.end!!.toInt()).coerceAtMost(transcription.audioData.size - 1))
                                                     )
                                                         .toShortArray(),
-                                                ).let { store.appliquerCorrections(it) }
+                                                ).let {
+                                                    if (it.viaRelais) viaRelais.set(true) else viaLocal.set(true)
+                                                    store.appliquerCorrections(it.texte)
+                                                }
 
                                             totalTranscriptionTime += currentTimeMillis() - timeBeforeTranscription
 
@@ -486,8 +503,20 @@ class MainRecognitionService : RecognitionService() {
             val transcription = transcriptions.toSortedMap().values.joinToString { it.text ?: "" }
 
             // Chaque dictée aboutie rejoint l'historique local, pour pouvoir
-            // la retrouver et la copier depuis l'application.
-            store.ajouterDictee(transcription)
+            // la retrouver et la copier depuis l'application — avec le délai
+            // vécu (validation → texte) et le chemin qui l'a produite.
+            val dureeMs = if (stopRequestedAtMs > 0) {
+                currentTimeMillis() - stopRequestedAtMs
+            } else {
+                totalTranscriptionTime
+            }
+            val source = when {
+                viaRelais.get() && viaLocal.get() -> "mixte"
+                viaRelais.get() -> "relais"
+                viaLocal.get() -> "local"
+                else -> null
+            }
+            store.ajouterDictee(transcription, dureeMs, source)
 
             val bundle = Bundle().apply {
                 putStringArrayList(
@@ -516,6 +545,7 @@ class MainRecognitionService : RecognitionService() {
     }
 
     override fun onStopListening(listener: Callback?) {
+        stopRequestedAtMs = currentTimeMillis()
         stopListening = true
     }
 
