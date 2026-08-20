@@ -17,6 +17,10 @@ data class Dictee(
     val texte: String,
     /** Moment de la dictée, en millisecondes depuis l'époque Unix. */
     val creeLe: Long,
+    /** Délai vécu entre la validation et le texte, en millisecondes. */
+    val dureeMs: Long? = null,
+    /** Chemin de transcription : « relais », « local » ou « mixte ». */
+    val source: String? = null,
 )
 
 /**
@@ -64,13 +68,15 @@ class ChuchoteStore private constructor(context: Context) {
     // Historique
     // ------------------------------------------------------------------
 
-    fun ajouterDictee(texte: String) {
+    fun ajouterDictee(texte: String, dureeMs: Long? = null, source: String? = null) {
         val propre = texte.trim()
         if (propre.isEmpty()) return
         scope.launch {
             db.writableDatabase.insert("dictees", null, ContentValues().apply {
                 put("texte", propre)
                 put("cree_le", System.currentTimeMillis())
+                dureeMs?.takeIf { it > 0 }?.let { put("duree_ms", it) }
+                source?.let { put("source", it) }
             })
             // Garder l'historique borné : au-delà, les plus vieilles dictées
             // partent en silence.
@@ -164,10 +170,18 @@ class ChuchoteStore private constructor(context: Context) {
     private fun rechargerDictees() {
         val liste = mutableListOf<Dictee>()
         db.readableDatabase.rawQuery(
-            "SELECT id, texte, cree_le FROM dictees ORDER BY id DESC", null
+            "SELECT id, texte, cree_le, duree_ms, source FROM dictees ORDER BY id DESC", null
         ).use { curseur ->
             while (curseur.moveToNext()) {
-                liste.add(Dictee(curseur.getLong(0), curseur.getString(1), curseur.getLong(2)))
+                liste.add(
+                    Dictee(
+                        id = curseur.getLong(0),
+                        texte = curseur.getString(1),
+                        creeLe = curseur.getLong(2),
+                        dureeMs = if (curseur.isNull(3)) null else curseur.getLong(3),
+                        source = if (curseur.isNull(4)) null else curseur.getString(4),
+                    )
+                )
             }
         }
         _dictees.value = liste
@@ -187,13 +201,15 @@ class ChuchoteStore private constructor(context: Context) {
         _dictionnaire.value = liste
     }
 
-    private class Db(context: Context) : SQLiteOpenHelper(context, "chuchote.db", null, 1) {
+    private class Db(context: Context) : SQLiteOpenHelper(context, "chuchote.db", null, 2) {
         override fun onCreate(db: SQLiteDatabase) {
             db.execSQL(
                 "CREATE TABLE dictees (" +
                         "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
                         "texte TEXT NOT NULL, " +
-                        "cree_le INTEGER NOT NULL)"
+                        "cree_le INTEGER NOT NULL, " +
+                        "duree_ms INTEGER, " +
+                        "source TEXT)"
             )
             db.execSQL(
                 "CREATE TABLE dictionnaire (" +
@@ -203,7 +219,12 @@ class ChuchoteStore private constructor(context: Context) {
             )
         }
 
-        override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+        override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+            if (oldVersion < 2) {
+                db.execSQL("ALTER TABLE dictees ADD COLUMN duree_ms INTEGER")
+                db.execSQL("ALTER TABLE dictees ADD COLUMN source TEXT")
+            }
+        }
     }
 
     companion object {

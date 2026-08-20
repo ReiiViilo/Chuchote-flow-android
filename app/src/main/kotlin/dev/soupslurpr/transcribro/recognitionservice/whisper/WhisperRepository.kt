@@ -5,6 +5,10 @@ import androidx.compose.runtime.mutableStateOf
 import com.whispercpp.whisper.WhisperContext
 import dev.soupslurpr.transcribro.remote.RemoteTranscriber
 
+/** Le texte transcrit, et le chemin qui l'a produit — utile pour comprendre
+ * d'où vient la lenteur quand il y en a. */
+data class ResultatTranscription(val texte: String, val viaRelais: Boolean)
+
 /**
  * @param remoteTranscriber relais éventuel. Quand il est configuré, il est
  * tenté en premier : un serveur bien doté transcrit plus vite que le
@@ -25,8 +29,10 @@ class WhisperRepository(
         }
     }
 
-    suspend fun transcribeAudio(data: ShortArray): String {
-        remoteTranscriber?.transcribe(data, SAMPLE_RATE)?.let { return it }
+    suspend fun transcribeAudio(data: ShortArray): ResultatTranscription {
+        remoteTranscriber?.transcribe(data, SAMPLE_RATE)?.let {
+            return ResultatTranscription(it, viaRelais = true)
+        }
 
         loadWhisperContextIfNull()
         // assume we only have one channel
@@ -47,7 +53,10 @@ class WhisperRepository(
         }
 
         val transcript = whisperContext.value?.transcribeData(buffer, ((data.size / 16000f) * 1000f).toLong()) ?: ""
-        return transcript.removeSuffix(" .") // remove hallucination
+        return ResultatTranscription(
+            transcript.removeSuffix(" ."), // remove hallucination
+            viaRelais = false,
+        )
     }
 
     suspend fun release() {

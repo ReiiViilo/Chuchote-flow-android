@@ -411,11 +411,11 @@ class FloatingWidgetService : Service() {
         val waveParams = LinearLayout.LayoutParams(dp(CONTENT_WIDTH_DP), dp(34))
 
         if (onLeft) {
-            waveParams.marginStart = dp(10)
+            waveParams.marginStart = dp(8)
             row.addView(cancel, cancelParams)
             row.addView(wave, waveParams)
         } else {
-            cancelParams.marginStart = dp(10)
+            cancelParams.marginStart = dp(8)
             row.addView(wave, waveParams)
             row.addView(cancel, cancelParams)
         }
@@ -569,6 +569,8 @@ class FloatingWidgetService : Service() {
         }
 
         override fun onResults(results: Bundle?) {
+            // L'éclat vert : la transcription est terminée, le texte part.
+            orbView?.flashSuccess()
             resetToIdle()
             val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
             if (!text.isNullOrBlank()) deliver(text)
@@ -644,8 +646,9 @@ class FloatingWidgetService : Service() {
         private const val DISMISS_CIRCLE_DP = 56
         private const val BUBBLE_SIZE_DP = 64
         private const val CONTENT_WIDTH_DP = 72
-        private const val PANEL_WIDTH_DP = 114
-        private const val PANEL_GAP_DP = 8
+        private const val PANEL_WIDTH_DP = 112
+        // Le tracé colle presque à la sphère : ils forment un seul objet.
+        private const val PANEL_GAP_DP = 2
         private const val PANEL_HEIGHT_DP = 44
     }
 }
