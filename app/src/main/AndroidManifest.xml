@@ -40,7 +40,7 @@
             android:name=".recognitionservice.MainRecognitionService"
             android:exported="true"
             android:foregroundServiceType="microphone"
-            android:label="Transcribro Speech Recognition Service"
+            android:label="Chuchote Flow"
             android:permission="android.permission.RECORD_AUDIO">
             <intent-filter>
                 <action android:name="android.speech.RecognitionService" />

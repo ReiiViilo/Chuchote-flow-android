@@ -1,39 +1,70 @@
 package dev.soupslurpr.transcribro.ui.settings
 
+import android.Manifest
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import android.view.inputmethod.InputMethodManager
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.VolunteerActivism
+import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.isGranted
+import com.google.accompanist.permissions.rememberPermissionState
 import dev.soupslurpr.transcribro.R
 import dev.soupslurpr.transcribro.dataStore
+import dev.soupslurpr.transcribro.overlay.FloatingWidgetService
+import dev.soupslurpr.transcribro.overlay.TextInsertionAccessibilityService
 import dev.soupslurpr.transcribro.preferences.PreferencesViewModel
+import dev.soupslurpr.transcribro.remote.RemoteTranscriptionSettings
 import dev.soupslurpr.transcribro.ui.reusablecomposables.ScreenLazyColumn
 
+@OptIn(ExperimentalPermissionsApi::class)
 @Composable
 fun SettingsStartScreen(
     onClickLicense: () -> Unit,
     onClickPrivacyPolicy: () -> Unit,
     onClickCredits: () -> Unit,
+    onClickDonate: () -> Unit,
 ) {
     val preferencesViewModel: PreferencesViewModel = viewModel(
         factory = PreferencesViewModel.PreferencesViewModelFactory(LocalContext.current.dataStore)
@@ -43,33 +74,244 @@ fun SettingsStartScreen(
 
     val localUriHandler = LocalUriHandler.current
 
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    val microphonePermissionState = rememberPermissionState(
+        Manifest.permission.RECORD_AUDIO
+    )
+
+    var isMyInputMethodEnabled by rememberSaveable {
+        mutableStateOf(isMyInputMethodEnabled(context))
+    }
+
+    var canDrawOverlays by rememberSaveable {
+        mutableStateOf(Settings.canDrawOverlays(context))
+    }
+
+    var isTextInsertionEnabled by rememberSaveable {
+        mutableStateOf(TextInsertionAccessibilityService.isConnected())
+    }
+
+    val remoteSettings = remember { RemoteTranscriptionSettings(context) }
+    var remoteEnabled by rememberSaveable { mutableStateOf(remoteSettings.enabled) }
+    var remoteBaseUrl by rememberSaveable { mutableStateOf(remoteSettings.baseUrl) }
+    var remoteToken by rememberSaveable { mutableStateOf(remoteSettings.token) }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START) {
+                isMyInputMethodEnabled = isMyInputMethodEnabled(context)
+                // Les autorisations se donnent dans les réglages système : il
+                // faut donc les relire au retour dans l'application.
+                canDrawOverlays = Settings.canDrawOverlays(context)
+                isTextInsertionEnabled = TextInsertionAccessibilityService.isConnected()
+            }
+        }
+
+        lifecycleOwner.lifecycle.addObserver(observer)
+
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
     ScreenLazyColumn(
         modifier = Modifier
             .fillMaxSize()
     ) {
         item {
-            SettingsCategory(
-                stringResource(R.string.theme)
-            )
+            SettingsCategory("Widget de dictée")
         }
         item {
-            val preference = preferencesUiState.pitchBlackBackground
-            SettingsSwitchItem(
-                name = stringResource(id = R.string.pitch_black_background_setting_name),
-                description = stringResource(id = R.string.pitch_black_background_setting_description),
-                checked = preference.second.value,
-                onCheckedChange = {
-                    preferencesViewModel.setPreference(
-                        preference.first,
-                        it
+            ElevatedCard {
+                Column(
+                    Modifier.padding(16.dp)
+                ) {
+                    Text(
+                        "Widget de dictée flottant : une bulle posée par-dessus toutes les applications. " +
+                                "Touche-la — ou secoue le téléphone — parle, puis confirme avec ✓. " +
+                                "Le texte s'insère dans le champ de saisie actif."
+                    )
+                    Spacer(Modifier.padding(8.dp))
+                    FilledTonalButton(
+                        enabled = !canDrawOverlays,
+                        onClick = {
+                            val intent = Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:" + context.packageName)
+                            )
+                            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            context.startActivity(intent)
+                        }
+                    ) {
+                        Text("1. Autoriser l'affichage par-dessus les autres apps")
+                    }
+                    Spacer(Modifier.padding(4.dp))
+                    FilledTonalButton(
+                        onClick = {
+                            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            context.startActivity(intent)
+                        }
+                    ) {
+                        Text(
+                            if (isTextInsertionEnabled) {
+                                "2. Accessibilité activée ✓ (rouvrir les réglages)"
+                            } else {
+                                "2. Activer Chuchote Flow dans Accessibilité"
+                            }
+                        )
+                    }
+                    Spacer(Modifier.padding(4.dp))
+                    FilledTonalButton(
+                        enabled = canDrawOverlays && microphonePermissionState.status.isGranted,
+                        onClick = {
+                            context.startForegroundService(
+                                Intent(context, FloatingWidgetService::class.java)
+                            )
+                        }
+                    ) {
+                        Text("3. Démarrer le widget")
+                    }
+                    Spacer(Modifier.padding(4.dp))
+                    FilledTonalButton(
+                        onClick = {
+                            context.stopService(
+                                Intent(context, FloatingWidgetService::class.java)
+                            )
+                        }
+                    ) {
+                        Text("Arrêter le widget")
+                    }
+                    Spacer(Modifier.padding(8.dp))
+                    Text(
+                        "Sans l'étape 2, le texte dicté est déposé dans le presse-papiers " +
+                                "au lieu d'être écrit directement."
                     )
                 }
-            )
+            }
+        }
+        item {
+            SettingsCategory("Transcription")
+        }
+        item {
+            ElevatedCard {
+                Column(
+                    Modifier.padding(16.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(
+                            checked = remoteEnabled,
+                            onCheckedChange = {
+                                remoteEnabled = it
+                                remoteSettings.enabled = it
+                            }
+                        )
+                        Spacer(Modifier.padding(8.dp))
+                        Text("Transcription par relais")
+                    }
+                    Spacer(Modifier.padding(8.dp))
+                    Text(
+                        "Envoie la dictée à ton relais, bien plus rapide que le téléphone. " +
+                                "Si le relais ne répond pas, la transcription se fait sur l'appareil " +
+                                "comme d'habitude — une dictée n'est jamais perdue."
+                    )
+                    Spacer(Modifier.padding(8.dp))
+                    OutlinedTextField(
+                        value = remoteBaseUrl,
+                        onValueChange = {
+                            remoteBaseUrl = it
+                            remoteSettings.baseUrl = it
+                        },
+                        singleLine = true,
+                        label = { Text("Adresse du relais") },
+                        placeholder = { Text("https://mon-relais.vercel.app") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.padding(4.dp))
+                    OutlinedTextField(
+                        value = remoteToken,
+                        onValueChange = {
+                            remoteToken = it
+                            remoteSettings.token = it
+                        },
+                        singleLine = true,
+                        label = { Text("Jeton") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.padding(8.dp))
+                    Text(
+                        "Tant que ce réglage est désactivé, l'application n'envoie rien : " +
+                                "tout reste sur l'appareil."
+                    )
+                }
+            }
+        }
+        item {
+            ElevatedCard {
+                Column(
+                    Modifier.padding(16.dp)
+                ) {
+                    Text(
+                        "Le micro est indispensable : c'est lui qui permet de dicter. " +
+                                "Choisir « Pendant l'utilisation de l'app » suffit.",
+                    )
+                    Spacer(Modifier.padding(8.dp))
+                    FilledTonalButton(
+                        enabled = !microphonePermissionState.status.isGranted,
+                        onClick = {
+                            microphonePermissionState.launchPermissionRequest()
+                        }
+                    ) {
+                        Text(
+                            if (microphonePermissionState.status.isGranted) {
+                                "Micro autorisé ✓"
+                            } else {
+                                "Autoriser le micro"
+                            }
+                        )
+                    }
+                    Spacer(Modifier.padding(8.dp))
+                    Text(
+                        "Le réglage système « application de saisie vocale » (Système > Langues > " +
+                                "Saisie vocale) n'est pas nécessaire : le widget et le clavier de Chuchote " +
+                                "s'adressent directement à leur propre moteur de transcription. Beaucoup " +
+                                "d'appareils, dont les Samsung, ne permettent d'ailleurs pas d'y choisir une " +
+                                "application tierce. Ce réglage ne concerne que les autres apps qui demandent " +
+                                "la saisie vocale du système, comme le bouton micro du clavier d'origine."
+                    )
+                }
+            }
         }
         item {
             SettingsCategory(
                 stringResource(R.string.voice_input_keyboard_setting_category)
             )
+        }
+        item {
+            if (!isMyInputMethodEnabled) {
+                ElevatedCard {
+                    Column(
+                        Modifier.padding(16.dp)
+                    ) {
+                        Text(
+                            "Pour dicter directement depuis le clavier, active le clavier " +
+                                    "de saisie vocale de Chuchote Flow dans les réglages système."
+                        )
+                        Spacer(Modifier.padding(8.dp))
+                        FilledTonalButton(
+                            onClick = {
+                                val intent = Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)
+                                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                context.startActivity(intent)
+                            }
+                        ) {
+                            Text("Ouvrir les réglages du clavier")
+                        }
+                    }
+                }
+            }
         }
         item {
             val preference = preferencesUiState.autoSwitchToPreviousInputMethod
@@ -129,17 +371,44 @@ fun SettingsStartScreen(
         }
         item {
             SettingsCategory(
+                stringResource(R.string.theme)
+            )
+        }
+        item {
+            val preference = preferencesUiState.pitchBlackBackground
+            SettingsSwitchItem(
+                name = stringResource(id = R.string.pitch_black_background_setting_name),
+                description = stringResource(id = R.string.pitch_black_background_setting_description),
+                checked = preference.second.value,
+                onCheckedChange = {
+                    preferencesViewModel.setPreference(
+                        preference.first,
+                        it
+                    )
+                }
+            )
+        }
+        item {
+            SettingsCategory(
                 stringResource(R.string.about_setting_category)
             )
         }
         item {
             SettingsIconItem(
-                name = stringResource(id = R.string.view_source_code_setting_name),
-                description = stringResource(id = R.string.view_source_code_setting_description),
+                name = "Code source de Chuchote Flow",
+                description = "Voir le code source sur GitHub",
                 icon = Icons.AutoMirrored.Filled.ExitToApp,
                 onClick = {
-                    localUriHandler.openUri("https://github.com/soupslurpr/Transcribro")
+                    localUriHandler.openUri("https://github.com/ReiiViilo/Chuchote-Flow-Android")
                 }
+            )
+        }
+        item {
+            SettingsIconItem(
+                name = "Soutenir Transcribro",
+                description = "Chuchote Flow est bâti sur Transcribro, le projet libre de soupslurpr",
+                icon = Icons.Filled.VolunteerActivism,
+                onClick = onClickDonate
             )
         }
         item {
@@ -167,6 +436,22 @@ fun SettingsStartScreen(
             )
         }
     }
+}
+
+fun isMyInputMethodEnabled(context: Context): Boolean {
+    val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+
+    val enabledInputMethods = imm.enabledInputMethodList
+
+    val myInputMethodPackageName = context.packageName
+
+    for (inputMethod in enabledInputMethods) {
+        if (myInputMethodPackageName == inputMethod.packageName) {
+            return true
+        }
+    }
+
+    return false
 }
 
 @Composable

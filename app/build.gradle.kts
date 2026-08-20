@@ -60,7 +60,7 @@ android {
         applicationId = "dev.soupslurpr.transcribro"
         minSdk = 29
         targetSdk = 36
-        versionCode = 7
+        versionCode = 8
         versionName = versionCode.toString()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

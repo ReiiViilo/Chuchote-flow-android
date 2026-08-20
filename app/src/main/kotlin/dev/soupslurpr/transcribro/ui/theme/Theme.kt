@@ -1,52 +1,56 @@
 package dev.soupslurpr.transcribro.ui.theme
 
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import dev.soupslurpr.transcribro.preferences.PreferencesViewModel
 
 /**
- * Dark color scheme for devices < Android 12, which do not support dynamic color.
+ * Thème sombre aux couleurs de Chuchote Flow : la nuit bleutée du logo en
+ * fond, le cyan de l'orbe en accent. Les couleurs dynamiques d'Android sont
+ * volontairement écartées — l'application garde son identité quel que soit
+ * le fond d'écran.
  */
 private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80,
+    primary = CyanChuchote,
+    onPrimary = SurCyanChuchote,
+    primaryContainer = ConteneurCyan,
+    onPrimaryContainer = SurConteneurCyan,
+    secondary = IndigoChuchote,
+    onSecondary = SurIndigoChuchote,
+    tertiary = LavandeChuchote,
+    background = NuitChuchote,
+    onBackground = SurNuitChuchote,
+    surface = NuitChuchote,
+    onSurface = SurNuitChuchote,
+    surfaceVariant = VarianteNuit,
+    onSurfaceVariant = SurVarianteNuit,
+    surfaceContainerLowest = Color(0xFF0B0B20),
+    surfaceContainerLow = Color(0xFF171735),
+    surfaceContainer = Color(0xFF1B1B3C),
+    surfaceContainerHigh = Color(0xFF212145),
+    surfaceContainerHighest = Color(0xFF26264E),
 )
 
 /**
- * Light color scheme for devices < Android 12, which do not support dynamic color.
+ * Thème clair assorti : mêmes teintes, portées sur fond pâle.
  */
 private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40,
-
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
-    onPrimary = Color.White,
-    onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
+    primary = CyanProfond,
+    primaryContainer = ConteneurCyanClair,
+    onPrimaryContainer = SurConteneurCyanClair,
+    secondary = IndigoProfond,
+    tertiary = LavandeProfonde,
 )
 
 @Composable
 fun TranscribroTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
     preferencesViewModel: PreferencesViewModel,
     content: @Composable () -> Unit
 ) {
@@ -55,22 +59,6 @@ fun TranscribroTheme(
     val pitchBlackBackground = settingsUiState.pitchBlackBackground.second.value and darkTheme
 
     val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) {
-                if (pitchBlackBackground) {
-                    dynamicDarkColorScheme(context).copy(
-                        background = Color.Black,
-                        surface = Color.Black,
-                    )
-                } else {
-                    dynamicDarkColorScheme(context)
-                }
-            } else {
-                dynamicLightColorScheme(context)
-            }
-        }
-
         darkTheme -> {
             if (pitchBlackBackground) {
                 DarkColorScheme.copy(
