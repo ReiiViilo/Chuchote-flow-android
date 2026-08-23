@@ -5,15 +5,14 @@
 -->
 <data-extraction-rules>
     <cloud-backup>
-        <!-- TODO: Use <include> and <exclude> to control what is backed up.
-        <include .../>
-        <exclude .../>
-        -->
+        <!-- Les nouveaux WAV vivent aussi sous noBackupFilesDir. -->
+        <exclude domain="file" path="dictations/" />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="remote_transcription.xml" />
     </cloud-backup>
-    <!--
     <device-transfer>
-        <include .../>
-        <exclude .../>
+        <exclude domain="file" path="dictations/" />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="remote_transcription.xml" />
     </device-transfer>
-    -->
 </data-extraction-rules>

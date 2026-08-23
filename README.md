@@ -2,13 +2,13 @@
 
 Le client Android de **Chuchote Flow** — dictée vocale personnelle, gratuite et locale. Fork de [Transcribro](https://github.com/soupslurpr/Transcribro) (licence ISC), le clavier vocal open source basé sur whisper.cpp.
 
-Ce dépôt forme, avec [Chuchote-Flow](https://github.com/ReiiViilo/Chuchote-Flow) (desktop, fork de Handy), **un seul produit** : des interfaces par plateforme, un cerveau commun.
+Ce dépôt vise, avec [Chuchote-Flow](https://github.com/ReiiViilo/Chuchote-Flow) (desktop, fork de Handy), **un seul produit**. Aujourd'hui, les deux applications restent toutefois deux clients locaux séparés : Android n'est pas encore connecté à la base ni à l'historique du desktop.
 
 ## Architecture « un seul produit »
 
 ```
    ┌─────────────────────────────────────────────┐
-   │              Cerveau commun (nuage)          │
+   │       Cible future : cerveau commun privé     │
    │  historique des dictées · prompts FR-QC ·    │
    │  dictionnaire personnel · apprentissages     │
    └──────────────┬──────────────┬───────────────┘
@@ -20,13 +20,13 @@ Ce dépôt forme, avec [Chuchote-Flow](https://github.com/ReiiViilo/Chuchote-Flo
         └──────────────┘   └────────────────┘
 ```
 
-Peu importe l'appareil où tu dictes, tout aboutit au même historique, avec les mêmes prompts de nettoyage et le même dictionnaire personnel — comme le compte Wispr Flow, mais à toi.
+La cible est qu'une dictée faite sur n'importe quel appareil aboutisse au même historique et au même dictionnaire. Cette synchronisation n'est pas encore implémentée dans le client Android.
 
 ## Ce que Transcribro fournit déjà
 
 - Clavier vocal Android (IME) : le micro apparaît dans n'importe quelle app, le texte dicté s'insère dans le champ actif
 - Transcription 100 % locale avec whisper.cpp + détection de voix Silero VAD
-- Aucune connexion réseau requise, aucune télémétrie (l'app ne demande que la permission micro — pas même `INTERNET`)
+- Transcription locale utilisable sans relais et sans télémétrie applicative. Le fork déclare toutefois `INTERNET`, car un relais de transcription facultatif peut être configuré; lorsqu'il est activé, des segments audio et un prompt de vocabulaire quittent l'appareil.
 
 ## Ce que ce fork change
 

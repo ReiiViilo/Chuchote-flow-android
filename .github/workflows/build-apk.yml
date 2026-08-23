@@ -47,8 +47,11 @@ jobs:
           path: app/src/main/assets/models/whisper
           key: whisper-model-small-q8_0
 
+      - name: Verify unit tests and lint
+        run: ./gradlew testDebugUnitTest lintDebug --no-daemon --no-build-cache
+
       - name: Build debug APK
-        run: ./gradlew assembleDebug --no-daemon
+        run: ./gradlew assembleDebug --no-daemon --no-build-cache
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

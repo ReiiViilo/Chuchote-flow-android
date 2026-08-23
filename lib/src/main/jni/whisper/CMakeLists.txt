@@ -64,6 +64,18 @@ function(build_library target_name)
     # le -O0 qu'ajoute la configuration Debug.
     target_compile_options(${target_name} PRIVATE -O3)
 
+    # Android 15+ peut utiliser des pages mémoire de 16 Kio. L'alignement ZIP
+    # de l'APK ne suffit pas : chaque segment LOAD de chaque bibliothèque ELF
+    # doit aussi annoncer un alignement compatible. Le projet reste sur NDK r27,
+    # donc on configure explicitement l'éditeur de liens pour toutes les cibles,
+    # y compris les variantes Whisper optimisées par ABI.
+    target_link_options(
+            ${target_name}
+            PRIVATE
+            -Wl,-z,max-page-size=16384
+            -Wl,-z,common-page-size=16384
+    )
+
     if (NOT ${CMAKE_BUILD_TYPE} STREQUAL "Debug")
         target_compile_options(${target_name} PRIVATE -fvisibility=hidden -fvisibility-inlines-hidden)
         target_compile_options(${target_name} PRIVATE -ffunction-sections -fdata-sections)

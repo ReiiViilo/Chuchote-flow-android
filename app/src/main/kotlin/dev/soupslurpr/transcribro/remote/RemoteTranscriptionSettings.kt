@@ -2,6 +2,75 @@ package dev.soupslurpr.transcribro.remote
 
 import android.content.Context
 
+internal data class RemoteRequestTarget(
+    val baseUrl: String,
+    val token: String,
+)
+
+internal data class RemoteConfigurationSnapshot(
+    val enabled: Boolean,
+    val baseUrl: String,
+    val token: String,
+) {
+    val hasCompleteEndpoint: Boolean
+        get() = baseUrl.isNotBlank() && token.isNotBlank()
+
+    val requestTarget: RemoteRequestTarget?
+        get() = if (enabled && hasCompleteEndpoint) {
+            RemoteRequestTarget(baseUrl = baseUrl, token = token)
+        } else {
+            null
+        }
+}
+
+internal object RemoteConfigurationPolicy {
+    fun importSharedLink(
+        current: RemoteConfigurationSnapshot,
+        value: String,
+    ): RemoteConfigurationSnapshot? {
+        val separator = value.indexOf('#')
+        if (separator < 0) return null
+        val baseUrl = normalizeBaseUrl(value.substring(0, separator))
+        val token = value.substring(separator + 1).trim()
+        if (baseUrl.isEmpty() || token.isEmpty()) return null
+        return current.copy(baseUrl = baseUrl, token = token)
+    }
+
+    fun editBaseUrl(
+        current: RemoteConfigurationSnapshot,
+        value: String,
+    ): RemoteConfigurationSnapshot = current.copy(
+        enabled = false,
+        baseUrl = normalizeBaseUrl(value),
+        token = "",
+    )
+
+    fun editToken(
+        current: RemoteConfigurationSnapshot,
+        value: String,
+    ): RemoteConfigurationSnapshot = current.copy(
+        enabled = false,
+        token = value.trim(),
+    )
+
+    fun withEnabled(
+        current: RemoteConfigurationSnapshot,
+        requested: Boolean,
+    ): RemoteConfigurationSnapshot = current.copy(
+        enabled = requested && current.hasCompleteEndpoint,
+    )
+
+    fun normalized(candidate: RemoteConfigurationSnapshot): RemoteConfigurationSnapshot {
+        val normalized = candidate.copy(
+            baseUrl = normalizeBaseUrl(candidate.baseUrl),
+            token = candidate.token.trim(),
+        )
+        return normalized.copy(enabled = normalized.enabled && normalized.hasCompleteEndpoint)
+    }
+
+    private fun normalizeBaseUrl(value: String): String = value.trim().trimEnd('/')
+}
+
 /**
  * Réglages du relais de transcription.
  *
@@ -14,27 +83,47 @@ class RemoteTranscriptionSettings(context: Context) {
     private val preferences =
         context.applicationContext.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE)
 
-    var enabled: Boolean
-        get() = preferences.getBoolean(KEY_ENABLED, false)
-        set(value) = preferences.edit().putBoolean(KEY_ENABLED, value).apply()
+    val enabled: Boolean
+        get() = snapshot().enabled
 
     /** Adresse du relais, sans barre oblique finale ni chemin. */
-    var baseUrl: String
-        get() = preferences.getString(KEY_BASE_URL, "")?.trim()?.trimEnd('/') ?: ""
-        set(value) = preferences.edit().putString(KEY_BASE_URL, value.trim().trimEnd('/')).apply()
+    val baseUrl: String
+        get() = snapshot().baseUrl
 
-    var token: String
-        get() = preferences.getString(KEY_TOKEN, "")?.trim() ?: ""
-        set(value) = preferences.edit().putString(KEY_TOKEN, value.trim()).apply()
+    val token: String
+        get() = snapshot().token
 
     /** Le relais n'est tenté que s'il est activé et complètement configuré. */
     val isUsable: Boolean
-        get() = enabled && baseUrl.isNotEmpty() && token.isNotEmpty()
+        get() = snapshot().requestTarget != null
+
+    internal fun snapshot(): RemoteConfigurationSnapshot = synchronized(PREFERENCES_LOCK) {
+        RemoteConfigurationPolicy.normalized(
+            RemoteConfigurationSnapshot(
+                enabled = preferences.getBoolean(KEY_ENABLED, false),
+                baseUrl = preferences.getString(KEY_BASE_URL, "").orEmpty(),
+                token = preferences.getString(KEY_TOKEN, "").orEmpty(),
+            ),
+        )
+    }
+
+    /** Écrit toujours enabled, URL et jeton dans un seul Editor atomique. */
+    internal fun replace(candidate: RemoteConfigurationSnapshot): RemoteConfigurationSnapshot =
+        synchronized(PREFERENCES_LOCK) {
+            val normalized = RemoteConfigurationPolicy.normalized(candidate)
+            preferences.edit()
+                .putBoolean(KEY_ENABLED, normalized.enabled)
+                .putString(KEY_BASE_URL, normalized.baseUrl)
+                .putString(KEY_TOKEN, normalized.token)
+                .apply()
+            normalized
+        }
 
     companion object {
         private const val FILE_NAME = "remote_transcription"
         private const val KEY_ENABLED = "enabled"
         private const val KEY_BASE_URL = "base_url"
         private const val KEY_TOKEN = "token"
+        private val PREFERENCES_LOCK = Any()
     }
 }

@@ -6,8 +6,11 @@
    See https://developer.android.com/about/versions/12/backup-restore
 -->
 <full-backup-content>
-    <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+    <!-- Défense en profondeur pour les éventuels WAV d'une ancienne version. -->
+    <exclude domain="file" path="dictations/" />
+    <!-- Les transcriptions et le dictionnaire personnel sont sensibles. -->
+    <exclude domain="database" path="." />
+    <!-- Un bearer token restauré sur un autre appareil resterait utilisable
+         sans nouvelle authentification auprès du relais. -->
+    <exclude domain="sharedpref" path="remote_transcription.xml" />
 </full-backup-content>

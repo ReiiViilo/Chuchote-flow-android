@@ -19,6 +19,7 @@ import android.view.ViewConfiguration.getKeyRepeatDelay
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputConnection
+import android.widget.Toast
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -87,10 +88,15 @@ import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+import dev.soupslurpr.transcribro.MainActivity
 import dev.soupslurpr.transcribro.R
 import dev.soupslurpr.transcribro.dataStore
+import dev.soupslurpr.transcribro.preferences.PrivacyConsent
 import dev.soupslurpr.transcribro.preferences.PreferencesViewModel
 import dev.soupslurpr.transcribro.recognitionservice.MainRecognitionService
+import dev.soupslurpr.transcribro.recognitionservice.RecognitionSessionTracker
+import dev.soupslurpr.transcribro.overlay.TextInsertionComposer
+import dev.soupslurpr.transcribro.overlay.RecognizerCommandBoundary
 import dev.soupslurpr.transcribro.ui.reusablecomposables.ScreenLazyColumn
 import dev.soupslurpr.transcribro.ui.reusablecomposables.longPressableKey
 import dev.soupslurpr.transcribro.ui.theme.TranscribroTheme
@@ -108,8 +114,197 @@ private var showInsufficientPermissionsError by mutableStateOf(false)
 
 private var isSpeaking by mutableStateOf(false)
 
+/** Effet observable à appliquer à l'éditeur pour un événement de reconnaissance. */
+data class ImeTranscriptionUpdate(
+    val textToCommit: String,
+    val replaceSelection: Boolean,
+    val terminal: Boolean,
+    val shouldAutoSend: Boolean,
+)
+
+enum class ImeAttemptState { IDLE, PENDING, ACTIVE, STOPPING }
+
+/** Génération locale couvrant même les callbacks Android sans Bundle/UUID. */
+class ImeAttemptGate {
+    private var generation = 0L
+    private var state = ImeAttemptState.IDLE
+
+    @Synchronized
+    fun begin(): Long? {
+        if (state != ImeAttemptState.IDLE) return null
+        generation += 1
+        state = ImeAttemptState.PENDING
+        return generation
+    }
+
+    @Synchronized
+    fun activate(attempt: Long): Boolean {
+        if (attempt != generation || state != ImeAttemptState.PENDING) return false
+        state = ImeAttemptState.ACTIVE
+        return true
+    }
+
+    @Synchronized
+    fun requestStop(attempt: Long): Boolean {
+        if (attempt != generation || state != ImeAttemptState.ACTIVE) return false
+        state = ImeAttemptState.STOPPING
+        return true
+    }
+
+    @Synchronized
+    fun accepts(attempt: Long): Boolean =
+        attempt == generation && state != ImeAttemptState.IDLE
+
+    @Synchronized
+    fun finish(attempt: Long): Boolean {
+        if (!accepts(attempt)) return false
+        generation += 1
+        state = ImeAttemptState.IDLE
+        return true
+    }
+
+    @Synchronized
+    fun cancel() {
+        generation += 1
+        state = ImeAttemptState.IDLE
+    }
+
+    @Synchronized
+    fun isBusy(): Boolean = state != ImeAttemptState.IDLE
+
+    @Synchronized
+    fun currentState(): ImeAttemptState = state
+}
+
+/** Un échec Binder pendant stop rend immédiatement la tentative réutilisable. */
+internal object ImeStopCommandBoundary {
+    fun requestStop(
+        gate: ImeAttemptGate,
+        attempt: Long,
+        stop: () -> Unit,
+        onFailure: () -> Unit,
+    ): Boolean {
+        if (!gate.requestStop(attempt)) return false
+        return RecognizerCommandBoundary.execute(
+            command = stop,
+            onFailure = {
+                gate.cancel()
+                onFailure()
+            },
+        )
+    }
+}
+
+object ImeCommitDecision {
+    fun shouldAutoSend(
+        update: ImeTranscriptionUpdate,
+        commitSucceeded: Boolean,
+        editorCurrent: Boolean,
+        consentAccepted: Boolean,
+    ): Boolean = update.shouldAutoSend &&
+        postCommitGuaranteesHold(
+            update = update,
+            commitSucceeded = commitSucceeded,
+            editorCurrent = editorCurrent,
+            consentAccepted = consentAccepted,
+        )
+
+    fun shouldAutoSwitch(
+        update: ImeTranscriptionUpdate,
+        autoSwitchEnabled: Boolean,
+        commitSucceeded: Boolean,
+        editorCurrent: Boolean,
+        consentAccepted: Boolean,
+    ): Boolean = autoSwitchEnabled &&
+        postCommitGuaranteesHold(
+            update = update,
+            commitSucceeded = commitSucceeded,
+            editorCurrent = editorCurrent,
+            consentAccepted = consentAccepted,
+        )
+
+    private fun postCommitGuaranteesHold(
+        update: ImeTranscriptionUpdate,
+        commitSucceeded: Boolean,
+        editorCurrent: Boolean,
+        consentAccepted: Boolean,
+    ): Boolean =
+        update.terminal &&
+        update.textToCommit.isNotEmpty() &&
+        commitSucceeded &&
+        editorCurrent &&
+        consentAccepted
+}
+
+enum class ImeFinalIdentityDecision {
+    PROCESS,
+    TERMINATE_FAIL_CLOSED;
+
+    companion object {
+        fun fromSessionCompletion(sessionCompleted: Boolean): ImeFinalIdentityDecision =
+            if (sessionCompleted) PROCESS else TERMINATE_FAIL_CLOSED
+    }
+}
+
+/**
+ * Contrat pur entre les résultats cumulatifs Android et l'unique commit IME.
+ *
+ * Les partiels ne modifient jamais l'application hôte : Android peut réviser
+ * leur préfixe et un commit incrémental ne peut alors être réparé sans risquer
+ * d'effacer le texte de l'utilisateur. Seul le résultat final est inséré.
+ */
+class ImeTranscriptionSession {
+    private var terminalSeen = false
+
+    @Synchronized
+    fun reset() {
+        terminalSeen = false
+    }
+
+    @Synchronized
+    fun onPartial(cumulativeText: String, selectionActive: Boolean): ImeTranscriptionUpdate =
+        ImeTranscriptionUpdate(
+            textToCommit = "",
+            replaceSelection = false,
+            terminal = false,
+            shouldAutoSend = false,
+        )
+
+    @Synchronized
+    fun onFinal(
+        cumulativeText: String,
+        selectionActive: Boolean,
+        autoSendEnabled: Boolean,
+    ): ImeTranscriptionUpdate {
+        if (terminalSeen) {
+            return ImeTranscriptionUpdate(
+                textToCommit = "",
+                replaceSelection = false,
+                terminal = false,
+                shouldAutoSend = false,
+            )
+        }
+        terminalSeen = true
+        val finalText = cumulativeText.takeIf { it.isNotBlank() }.orEmpty()
+
+        return ImeTranscriptionUpdate(
+            textToCommit = finalText,
+            replaceSelection = finalText.isNotEmpty() && selectionActive,
+            terminal = true,
+            shouldAutoSend = autoSendEnabled && finalText.isNotEmpty(),
+        )
+    }
+}
+
 class VoiceInput : InputMethodService() {
     private val voiceInputLifecycleOwner = VoiceInputLifecycleOwner()
+    private val transcriptionSession = ImeTranscriptionSession()
+    private val recognitionSessions = RecognitionSessionTracker()
+    private val attemptGate = ImeAttemptGate()
+    private var editorEpoch = 0L
+    private var currentAttempt: Long? = null
+    private var pendingRecognitionEditorEpoch: Long? = null
+    private var activeRecognitionEditorEpoch: Long? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -127,9 +322,13 @@ class VoiceInput : InputMethodService() {
 
             val audioManager = context.getSystemService(AudioManager::class.java)
 
-            val startedRecognitionMediaPlayer = MediaPlayer.create(context, R.raw.started_recognition)
+            val startedRecognitionMediaPlayer = remember {
+                MediaPlayer.create(context, R.raw.started_recognition)
+            }
 
-            val stoppedRecognitionMediaPlayer = MediaPlayer.create(context, R.raw.stopped_recognition)
+            val stoppedRecognitionMediaPlayer = remember {
+                MediaPlayer.create(context, R.raw.stopped_recognition)
+            }
 
             val preferencesViewModel: PreferencesViewModel = viewModel(
                 factory = PreferencesViewModel.PreferencesViewModelFactory(dataStore)
@@ -191,6 +390,11 @@ class VoiceInput : InputMethodService() {
                                 .padding(innerPadding)
                                 .padding(8.dp)
                         ) {
+                            LaunchedEffect(acceptedPrivacyPolicyAndLicense) {
+                                if (!acceptedPrivacyPolicyAndLicense) {
+                                    cancelRecognition()
+                                }
+                            }
                             if (!acceptedPrivacyPolicyAndLicense) {
                                 ScreenLazyColumn {
                                     item {
@@ -202,7 +406,7 @@ class VoiceInput : InputMethodService() {
                                                 startActivity(context.packageManager.getLaunchIntentForPackage(context.packageName))
                                             }
                                         ) {
-                                            Text("Open Transcribro")
+                                            Text("Open Chuchote Flow")
                                         }
                                     }
                                 }
@@ -236,213 +440,25 @@ class VoiceInput : InputMethodService() {
                                     }
                                 }
                             } else {
-                                LaunchedEffect(true) {
-                                    if (!isRecognizing) {
-                                        if (speechRecognizer.value == null) {
-                                            speechRecognizer.value = createSpeechRecognizer(
-                                                applicationContext,
-                                                ComponentName(applicationContext, MainRecognitionService::class.java)
-                                            )
-
-                                            speechRecognizer.value!!.setRecognitionListener(object :
-                                                RecognitionListener {
-                                                override fun onReadyForSpeech(params: Bundle?) {
-                                                    isRecognizing = true
-
-                                                    if (audioManager.ringerMode == AudioManager.RINGER_MODE_NORMAL) {
-                                                        startedRecognitionMediaPlayer.start()
-                                                    }
-                                                }
-
-                                                override fun onBeginningOfSpeech() {
-                                                    isSpeaking = true
-                                                }
-
-                                                override fun onRmsChanged(rmsdB: Float) {
-//                TODO("Not yet implemented")
-                                                }
-
-                                                override fun onBufferReceived(buffer: ByteArray?) {
-//                TODO("Not yet implemented")
-                                                }
-
-                                                override fun onEndOfSpeech() {
-                                                    isSpeaking = false
-                                                }
-
-                                                override fun onError(error: Int) {
-                                                    when (error) {
-                                                        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
-                                                            showInsufficientPermissionsError = true
-                                                        }
-
-                                                        SpeechRecognizer.ERROR_RECOGNIZER_BUSY, SpeechRecognizer.ERROR_CLIENT -> {
-                                                            cancelSnackbarJobAndLaunch(
-                                                                "Recognition is finishing, please wait or cancel.",
-                                                                withDismissAction = true,
-                                                                duration = SnackbarDuration.Short
-                                                            )
-                                                        }
-
-                                                        else -> {
-//                                                            println(error)
-                                                        }
-                                                    }
-                                                }
-
-                                                override fun onResults(results: Bundle?) {
-                                                    isRecognizing = false
-
-                                                    if (audioManager.ringerMode == AudioManager.RINGER_MODE_NORMAL) {
-                                                        stoppedRecognitionMediaPlayer.start()
-                                                    }
-
-                                                    if (preferencesUiState.autoSwitchToPreviousInputMethod.second.value) {
-                                                        this@VoiceInput.switchToPreviousInputMethod()
-                                                    }
-                                                }
-
-                                                override fun onPartialResults(partialResults: Bundle?) {
-                                                    currentInputConnection.also { ic: InputConnection ->
-                                                        if (partialResults != null) {
-                                                            val transcription = partialResults.getStringArrayList(
-                                                                SpeechRecognizer.RESULTS_RECOGNITION
-                                                            )?.get(0) ?: ""
-
-                                                            if (transcription.isNotEmpty()) {
-                                                                var textToCommit = if ((ic.getTextBeforeCursor(
-                                                                        2,
-                                                                        0
-                                                                    ) == "") || (ic.getTextBeforeCursor(1, 0) == "\n")
-                                                                    || (ic.getTextBeforeCursor(1, 0) == " ")
-                                                                ) {
-                                                                    transcription.removePrefix(" ")
-                                                                } else {
-                                                                    transcription
-                                                                }
-
-                                                                val selectedText = ic.getSelectedText(0)
-
-                                                                val readdUppercase =
-                                                                    textToCommit.filter { it.isLetter() }.firstOrNull {
-                                                                        !it.isUpperCase()
-                                                                    } == null
-
-                                                                if (!selectedText.isNullOrEmpty()) {
-                                                                    val removeSuffixPoint =
-                                                                        textToCommit.trim().toList().withIndex()
-                                                                            .reversed().firstOrNull {
-                                                                                it.value.isLetterOrDigit()
-                                                                            }
-
-                                                                    if (removeSuffixPoint != null) {
-                                                                        textToCommit = textToCommit.trim()
-                                                                            .substring(0..removeSuffixPoint.index)
-                                                                    }
-
-                                                                    val removePrefixPoint =
-                                                                        textToCommit.trim().toList().withIndex()
-                                                                            .firstOrNull {
-                                                                                it.value.isLetterOrDigit()
-                                                                            }
-
-                                                                    if (removePrefixPoint != null) {
-                                                                        textToCommit = textToCommit.trim()
-                                                                            .substring(removePrefixPoint.index..textToCommit.trim().lastIndex)
-                                                                    }
-
-                                                                    val selectedEndOfWordPunctuation =
-                                                                        selectedText.trim().toList().withIndex()
-                                                                            .reversed().firstOrNull {
-                                                                                it.value.isLetterOrDigit()
-                                                                            }
-
-                                                                    val firstSelectedNonWhitespaceCharacter =
-                                                                        selectedText.trim().firstOrNull()
-
-                                                                    if (firstSelectedNonWhitespaceCharacter != null) {
-                                                                        textToCommit =
-                                                                            if (textToCommit.firstOrNull { !it.isUpperCase() } == null) {
-                                                                                textToCommit
-                                                                            } else if (firstSelectedNonWhitespaceCharacter.isUpperCase()) {
-                                                                                textToCommit[0].uppercaseChar() + textToCommit.substring(
-                                                                                    1..textToCommit.lastIndex
-                                                                                )
-                                                                            } else if (firstSelectedNonWhitespaceCharacter.isLowerCase()) {
-                                                                                textToCommit[0].lowercaseChar() + textToCommit.substring(
-                                                                                    1..textToCommit.lastIndex
-                                                                                )
-                                                                            } else if (selectedText.firstOrNull { it.isLetterOrDigit() || it.isWhitespace() } == null) {
-                                                                                textToCommit[0].lowercaseChar() + textToCommit.substring(
-                                                                                    1..textToCommit.lastIndex
-                                                                                )
-                                                                            } else {
-                                                                                textToCommit
-                                                                            }
-                                                                    }
-
-                                                                    if (selectedEndOfWordPunctuation != null) {
-                                                                        textToCommit += selectedText.trim()
-                                                                            .substring(selectedEndOfWordPunctuation.index + 1..selectedText.trim().lastIndex)
-                                                                    }
-
-                                                                    if (selectedText.firstOrNull { it.isLetterOrDigit() } == null) {
-                                                                        textToCommit = " $textToCommit"
-
-                                                                        if (textToCommit.last().isLetterOrDigit()) {
-                                                                            textToCommit = "$textToCommit$selectedText"
-                                                                        }
-                                                                    }
-                                                                } else {
-                                                                    val twoCharactersBeforeCursor =
-                                                                        ic.getTextBeforeCursor(2, 0)
-                                                                    val firstLetterOrDigit = textToCommit.withIndex()
-                                                                        .firstOrNull { it.value.isLetterOrDigit() }
-
-                                                                    if ((twoCharactersBeforeCursor != null) && (twoCharactersBeforeCursor.firstOrNull { it.isLetterOrDigit() } != null)) {
-                                                                        if (twoCharactersBeforeCursor[0].isLetterOrDigit() && (twoCharactersBeforeCursor[1].isLetterOrDigit() || twoCharactersBeforeCursor[1].isWhitespace())) {
-                                                                            if (firstLetterOrDigit != null) {
-                                                                                val chars = textToCommit.toCharArray()
-
-                                                                                chars[firstLetterOrDigit.index] =
-                                                                                    firstLetterOrDigit.value.lowercaseChar()
-
-                                                                                textToCommit = chars.concatToString()
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-
-                                                                if (readdUppercase) {
-                                                                    textToCommit = textToCommit.uppercase()
-                                                                }
-
-                                                                ic.commitText(
-                                                                    textToCommit,
-                                                                    1
-                                                                )
-
-                                                                if (preferencesUiState.autoSendTranscription.second.value) {
-                                                                    ic.performEditorAction(EditorInfo.IME_ACTION_SEND)
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-
-                                                override fun onEvent(eventType: Int, params: Bundle?) {
-//            TODO("Not yet implemented")
-                                                }
-                                            })
-
-                                            if (autoStartRecognition) {
-                                                speechRecognizer.value!!.startListening(
-                                                    getStartListeningIntent(
-                                                        autoStopRecognition
-                                                    )
+                                LaunchedEffect(Unit) {
+                                    if (autoStartRecognition && !attemptGate.isBusy()) {
+                                        startRecognition(
+                                            longForm = autoStopRecognition,
+                                            autoSendEnabled = preferencesUiState
+                                                .autoSendTranscription.second.value,
+                                            autoSwitchEnabled = preferencesUiState
+                                                .autoSwitchToPreviousInputMethod.second.value,
+                                            audioManager = audioManager,
+                                            startedPlayer = startedRecognitionMediaPlayer,
+                                            stoppedPlayer = stoppedRecognitionMediaPlayer,
+                                            onBusy = {
+                                                cancelSnackbarJobAndLaunch(
+                                                    "Recognition is finishing, please wait or cancel.",
+                                                    withDismissAction = true,
+                                                    duration = SnackbarDuration.Short,
                                                 )
-                                            }
-                                        }
+                                            },
+                                        )
                                     }
                                 }
 
@@ -474,8 +490,7 @@ class VoiceInput : InputMethodService() {
                                                 ) {
                                                     OutlinedIconButton(
                                                         onClick = {
-                                                            speechRecognizer.value?.cancel()
-                                                            isRecognizing = false
+                                                            cancelRecognition()
 
                                                             val intent = context.packageManager
                                                                 .getLaunchIntentForPackage(context.packageName)!!
@@ -493,14 +508,13 @@ class VoiceInput : InputMethodService() {
                                                     ) {
                                                         Icon(
                                                             imageVector = Icons.Filled.Settings,
-                                                            contentDescription = "open Transcribro's settings"
+                                                            contentDescription = "Open Chuchote Flow settings"
                                                         )
                                                     }
                                                     Spacer(modifier = Modifier.size(8.dp))
                                                     FilledTonalIconButton(
                                                         onClick = {
-                                                            speechRecognizer.value?.cancel()
-                                                            isRecognizing = false
+                                                            cancelRecognition()
                                                             switchToPreviousInputMethod()
                                                         },
                                                         modifier = Modifier
@@ -519,8 +533,7 @@ class VoiceInput : InputMethodService() {
                                                 OutlinedButton(
                                                     onClick = {
                                                         if (isRecognizing) {
-                                                            speechRecognizer.value?.cancel()
-                                                            isRecognizing = false
+                                                            cancelRecognition()
                                                         }
                                                     },
                                                     modifier = Modifier
@@ -539,12 +552,24 @@ class VoiceInput : InputMethodService() {
                                                 checked = isRecognizing,
                                                 onCheckedChange = {
                                                     if (isRecognizing) {
-                                                        speechRecognizer.value?.stopListening()
+                                                        requestStopRecognition()
                                                     } else {
-                                                        speechRecognizer.value?.startListening(
-                                                            getStartListeningIntent(
-                                                                autoStopRecognition
-                                                            )
+                                                        startRecognition(
+                                                            longForm = autoStopRecognition,
+                                                            autoSendEnabled = preferencesUiState
+                                                                .autoSendTranscription.second.value,
+                                                            autoSwitchEnabled = preferencesUiState
+                                                                .autoSwitchToPreviousInputMethod.second.value,
+                                                            audioManager = audioManager,
+                                                            startedPlayer = startedRecognitionMediaPlayer,
+                                                            stoppedPlayer = stoppedRecognitionMediaPlayer,
+                                                            onBusy = {
+                                                                cancelSnackbarJobAndLaunch(
+                                                                    "Recognition is finishing, please wait or cancel.",
+                                                                    withDismissAction = true,
+                                                                    duration = SnackbarDuration.Short,
+                                                                )
+                                                            },
                                                         )
                                                     }
                                                 },
@@ -931,18 +956,23 @@ class VoiceInput : InputMethodService() {
         voiceInputLifecycleOwner.onPause()
     }
 
+    override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
+        super.onStartInput(attribute, restarting)
+        editorEpoch += 1
+        cancelRecognition()
+    }
+
     override fun onFinishInput() {
-        speechRecognizer.value?.cancel()
-        isRecognizing = false
+        editorEpoch += 1
+        cancelRecognition()
+        super.onFinishInput()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         voiceInputLifecycleOwner.onDestroy()
 
-        speechRecognizer.value?.cancel()
-        speechRecognizer.value?.destroy()
-        speechRecognizer.value = null
+        cancelRecognition()
     }
 
     private fun getStartListeningIntent(longForm: Boolean): Intent {
@@ -951,6 +981,421 @@ class VoiceInput : InputMethodService() {
             putExtra(MainRecognitionService.EXTRA_AUTO_STOP, longForm)
         }
     }
+
+    private fun startRecognition(
+        longForm: Boolean,
+        autoSendEnabled: Boolean,
+        autoSwitchEnabled: Boolean,
+        audioManager: AudioManager,
+        startedPlayer: MediaPlayer,
+        stoppedPlayer: MediaPlayer,
+        onBusy: () -> Unit,
+    ) {
+        if (!PrivacyConsent.isAcceptedBlocking(this)) {
+            startActivity(
+                Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+            return
+        }
+
+        val attempt = attemptGate.begin()
+        if (attempt == null) {
+            onBusy()
+            return
+        }
+
+        recognitionSessions.invalidate()
+        activeRecognitionEditorEpoch = null
+        pendingRecognitionEditorEpoch = editorEpoch
+        currentAttempt = attempt
+        // PENDING est déjà une tentative occupée : l'UI doit permettre de
+        // l'annuler et ne doit pas proposer un second démarrage.
+        isRecognizing = true
+
+        val previousRecognizer = speechRecognizer.value
+        speechRecognizer.value = null
+        previousRecognizer?.let { previous ->
+            RecognizerCommandBoundary.cleanup(
+                cancel = { previous.cancel() },
+                destroy = { previous.destroy() },
+            )
+        }
+
+        val recognizer = try {
+            createSpeechRecognizer(
+                applicationContext,
+                ComponentName(applicationContext, MainRecognitionService::class.java),
+            )
+        } catch (_: RuntimeException) {
+            abortPendingAttempt(attempt)
+            onBusy()
+            return
+        }
+
+        speechRecognizer.value = recognizer
+        RecognizerCommandBoundary.execute(
+            command = {
+                recognizer.setRecognitionListener(
+                    createAttemptListener(
+                        attempt = attempt,
+                        attemptEditorEpoch = editorEpoch,
+                        recognizer = recognizer,
+                        autoSendEnabled = autoSendEnabled,
+                        autoSwitchEnabled = autoSwitchEnabled,
+                        audioManager = audioManager,
+                        startedPlayer = startedPlayer,
+                        stoppedPlayer = stoppedPlayer,
+                        onBusy = onBusy,
+                    ),
+                )
+                recognizer.startListening(getStartListeningIntent(longForm))
+            },
+            onFailure = {
+                finishRecognitionAttempt(attempt, recognizer)
+                onBusy()
+            },
+        )
+    }
+
+    private fun createAttemptListener(
+        attempt: Long,
+        attemptEditorEpoch: Long,
+        recognizer: SpeechRecognizer,
+        autoSendEnabled: Boolean,
+        autoSwitchEnabled: Boolean,
+        audioManager: AudioManager,
+        startedPlayer: MediaPlayer,
+        stoppedPlayer: MediaPlayer,
+        onBusy: () -> Unit,
+    ): RecognitionListener = object : RecognitionListener {
+        override fun onReadyForSpeech(params: Bundle?) {
+            if (!isCurrentCallback(attempt, attemptEditorEpoch, recognizer)) return
+            if (!PrivacyConsent.isAcceptedBlocking(this@VoiceInput)) {
+                cancelRecognition()
+                return
+            }
+            if (!attemptGate.activate(attempt)) return
+            val sessionAccepted = recognitionSessions.activate(
+                params?.getString(MainRecognitionService.EXTRA_SESSION_ID),
+            )
+            if (!sessionAccepted) {
+                cancelRecognition()
+                return
+            }
+
+            activeRecognitionEditorEpoch = attemptEditorEpoch
+            pendingRecognitionEditorEpoch = null
+            transcriptionSession.reset()
+            isRecognizing = true
+            if (audioManager.ringerMode == AudioManager.RINGER_MODE_NORMAL) {
+                startedPlayer.start()
+            }
+        }
+
+        override fun onBeginningOfSpeech() {
+            if (isCurrentCallback(attempt, attemptEditorEpoch, recognizer)) {
+                isSpeaking = true
+            }
+        }
+
+        override fun onRmsChanged(rmsdB: Float) = Unit
+
+        override fun onBufferReceived(buffer: ByteArray?) = Unit
+
+        override fun onEndOfSpeech() {
+            if (isCurrentCallback(attempt, attemptEditorEpoch, recognizer)) {
+                isSpeaking = false
+            }
+        }
+
+        override fun onError(error: Int) {
+            if (!isCurrentCallback(attempt, attemptEditorEpoch, recognizer)) return
+            val consentAccepted = PrivacyConsent.isAcceptedBlocking(this@VoiceInput)
+            if (!finishRecognitionAttempt(attempt, recognizer)) return
+
+            if (!consentAccepted) return
+            when (error) {
+                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
+                    showInsufficientPermissionsError = true
+                }
+
+                SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
+                SpeechRecognizer.ERROR_CLIENT -> onBusy()
+
+                else -> Unit
+            }
+        }
+
+        override fun onResults(results: Bundle?) {
+            if (!isCurrentCallback(attempt, attemptEditorEpoch, recognizer)) return
+            if (!PrivacyConsent.isAcceptedBlocking(this@VoiceInput)) {
+                cancelRecognition()
+                return
+            }
+
+            val sessionId = results?.getString(MainRecognitionService.EXTRA_SESSION_ID)
+            when (
+                ImeFinalIdentityDecision.fromSessionCompletion(
+                    recognitionSessions.complete(sessionId),
+                )
+            ) {
+                ImeFinalIdentityDecision.PROCESS -> Unit
+                ImeFinalIdentityDecision.TERMINATE_FAIL_CLOSED -> {
+                    // Le callback est bien celui de cette génération locale,
+                    // mais son identité de service est absente ou invalide.
+                    // Ne rien écrire et libérer la tentative : attendre un
+                    // autre callback laisserait le clavier bloqué indéfiniment.
+                    finishRecognitionAttempt(attempt, recognizer)
+                    return
+                }
+            }
+            val transcription = results
+                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                ?.firstOrNull()
+                .orEmpty()
+            val ic = currentInputConnection
+            val update = transcriptionSession.onFinal(
+                cumulativeText = transcription,
+                selectionActive = !ic?.getSelectedText(0).isNullOrEmpty(),
+                autoSendEnabled = autoSendEnabled,
+            )
+            if (!finishRecognitionAttempt(attempt, recognizer)) return
+
+            val editorCurrent = attemptEditorEpoch == editorEpoch &&
+                ic != null &&
+                currentInputConnection === ic
+            val consentBeforeCommit = PrivacyConsent.isAcceptedBlocking(this@VoiceInput)
+            val commitSucceeded = editorCurrent &&
+                consentBeforeCommit &&
+                ic != null &&
+                applyImeUpdate(ic, update)
+            val editorCurrentBeforeSend = attemptEditorEpoch == editorEpoch &&
+                ic != null &&
+                currentInputConnection === ic
+            val consentBeforeSend = PrivacyConsent.isAcceptedBlocking(this@VoiceInput)
+            if (
+                ic != null &&
+                ImeCommitDecision.shouldAutoSend(
+                    update = update,
+                    commitSucceeded = commitSucceeded,
+                    editorCurrent = editorCurrentBeforeSend,
+                    consentAccepted = consentBeforeSend,
+                )
+            ) {
+                ic.performEditorAction(EditorInfo.IME_ACTION_SEND)
+            }
+
+            if (update.terminal && audioManager.ringerMode == AudioManager.RINGER_MODE_NORMAL) {
+                stoppedPlayer.start()
+            }
+            val editorCurrentBeforeSwitch = attemptEditorEpoch == editorEpoch &&
+                ic != null &&
+                currentInputConnection === ic
+            val consentBeforeSwitch = PrivacyConsent.isAcceptedBlocking(this@VoiceInput)
+            if (
+                ImeCommitDecision.shouldAutoSwitch(
+                    update = update,
+                    autoSwitchEnabled = autoSwitchEnabled,
+                    commitSucceeded = commitSucceeded,
+                    editorCurrent = editorCurrentBeforeSwitch,
+                    consentAccepted = consentBeforeSwitch,
+                )
+            ) {
+                switchToPreviousInputMethod()
+            }
+        }
+
+        override fun onPartialResults(partialResults: Bundle?) {
+            if (!isCurrentCallback(attempt, attemptEditorEpoch, recognizer)) return
+            if (!PrivacyConsent.isAcceptedBlocking(this@VoiceInput)) {
+                cancelRecognition()
+                return
+            }
+            val sessionId = partialResults?.getString(MainRecognitionService.EXTRA_SESSION_ID)
+            if (!recognitionSessions.accepts(sessionId)) return
+            transcriptionSession.onPartial(
+                cumulativeText = partialResults
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                    .orEmpty(),
+                selectionActive = false,
+            )
+        }
+
+        override fun onEvent(eventType: Int, params: Bundle?) = Unit
+    }
+
+    private fun isCurrentCallback(
+        attempt: Long,
+        attemptEditorEpoch: Long,
+        recognizer: SpeechRecognizer,
+    ): Boolean = currentAttempt == attempt &&
+        attemptGate.accepts(attempt) &&
+        attemptEditorEpoch == editorEpoch &&
+        speechRecognizer.value === recognizer
+
+    private fun requestStopRecognition() {
+        val attempt = currentAttempt ?: return
+        when (attemptGate.currentState()) {
+            ImeAttemptState.PENDING -> cancelRecognition()
+            ImeAttemptState.ACTIVE -> {
+                val recognizer = speechRecognizer.value
+                if (recognizer == null) {
+                    cancelRecognition()
+                    Toast.makeText(
+                        this,
+                        "Connexion vocale interrompue; tu peux recommencer.",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    return
+                }
+                ImeStopCommandBoundary.requestStop(
+                    gate = attemptGate,
+                    attempt = attempt,
+                    stop = { recognizer.stopListening() },
+                    onFailure = {
+                        cancelRecognition()
+                        Toast.makeText(
+                            this,
+                            "Connexion vocale interrompue; tu peux recommencer.",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    },
+                )
+            }
+
+            ImeAttemptState.IDLE,
+            ImeAttemptState.STOPPING -> Unit
+        }
+    }
+
+    private fun abortPendingAttempt(attempt: Long) {
+        if (!attemptGate.finish(attempt)) return
+        currentAttempt = null
+        pendingRecognitionEditorEpoch = null
+        activeRecognitionEditorEpoch = null
+        recognitionSessions.invalidate()
+        isRecognizing = false
+        isSpeaking = false
+    }
+
+    private fun finishRecognitionAttempt(
+        attempt: Long,
+        recognizer: SpeechRecognizer,
+    ): Boolean {
+        if (currentAttempt != attempt || speechRecognizer.value !== recognizer) return false
+        if (!attemptGate.finish(attempt)) return false
+
+        currentAttempt = null
+        pendingRecognitionEditorEpoch = null
+        activeRecognitionEditorEpoch = null
+        recognitionSessions.invalidate()
+        speechRecognizer.value = null
+        RecognizerCommandBoundary.execute(command = { recognizer.destroy() })
+        isRecognizing = false
+        isSpeaking = false
+        return true
+    }
+
+    private fun cancelRecognition() {
+        attemptGate.cancel()
+        currentAttempt = null
+        pendingRecognitionEditorEpoch = null
+        activeRecognitionEditorEpoch = null
+        recognitionSessions.invalidate()
+        val recognizer = speechRecognizer.value
+        speechRecognizer.value = null
+        recognizer?.let { active ->
+            RecognizerCommandBoundary.cleanup(
+                cancel = { active.cancel() },
+                destroy = { active.destroy() },
+            )
+        }
+        isRecognizing = false
+        isSpeaking = false
+    }
+}
+
+private fun applyImeUpdate(ic: InputConnection, update: ImeTranscriptionUpdate): Boolean {
+    val transcription = update.textToCommit
+    if (transcription.isEmpty()) return false
+
+    var textToCommit = if (
+        ic.getTextBeforeCursor(2, 0) == "" ||
+        ic.getTextBeforeCursor(1, 0) == "\n" ||
+        ic.getTextBeforeCursor(1, 0) == " "
+    ) {
+        transcription.removePrefix(" ")
+    } else {
+        transcription
+    }
+    if (textToCommit.isEmpty()) return false
+
+    val selectedText = if (update.replaceSelection) ic.getSelectedText(0) else null
+    val readdUppercase = textToCommit
+        .filter { it.isLetter() }
+        .firstOrNull { !it.isUpperCase() } == null
+
+    if (!selectedText.isNullOrEmpty()) {
+        val trimmedTranscription = textToCommit.trim()
+        val firstContent = trimmedTranscription.indexOfFirst { it.isLetterOrDigit() }
+        val lastContent = trimmedTranscription.indexOfLast { it.isLetterOrDigit() }
+        if (firstContent >= 0 && lastContent >= firstContent) {
+            textToCommit = trimmedTranscription.substring(firstContent, lastContent + 1)
+        }
+
+        val selectedTrimmed = selectedText.trim()
+        val firstSelectedCharacter = selectedTrimmed.firstOrNull()
+        if (firstSelectedCharacter != null && textToCommit.isNotEmpty()) {
+            textToCommit = when {
+                textToCommit.all { !it.isLetter() || it.isUpperCase() } -> textToCommit
+                firstSelectedCharacter.isUpperCase() ->
+                    textToCommit.replaceFirstChar { it.uppercase() }
+                firstSelectedCharacter.isLowerCase() ->
+                    textToCommit.replaceFirstChar { it.lowercase() }
+                selectedText.none { it.isLetterOrDigit() || it.isWhitespace() } ->
+                    textToCommit.replaceFirstChar { it.lowercase() }
+                else -> textToCommit
+            }
+        }
+
+        val selectedLastContent = selectedTrimmed.indexOfLast { it.isLetterOrDigit() }
+        if (selectedLastContent >= 0 && selectedLastContent < selectedTrimmed.lastIndex) {
+            textToCommit += selectedTrimmed.substring(selectedLastContent + 1)
+        }
+
+        if (selectedText.none { it.isLetterOrDigit() }) {
+            textToCommit = " $textToCommit"
+            if (textToCommit.lastOrNull()?.isLetterOrDigit() == true) {
+                textToCommit += selectedText
+            }
+        }
+    } else {
+        val twoCharactersBeforeCursor = ic.getTextBeforeCursor(2, 0)
+        val firstLetterOrDigit = textToCommit.withIndex()
+            .firstOrNull { it.value.isLetterOrDigit() }
+        if (
+            twoCharactersBeforeCursor != null &&
+            twoCharactersBeforeCursor.length >= 2 &&
+            twoCharactersBeforeCursor[0].isLetterOrDigit() &&
+            (twoCharactersBeforeCursor[1].isLetterOrDigit() ||
+                    twoCharactersBeforeCursor[1].isWhitespace()) &&
+            firstLetterOrDigit != null
+        ) {
+            val chars = textToCommit.toCharArray()
+            chars[firstLetterOrDigit.index] = firstLetterOrDigit.value.lowercaseChar()
+            textToCommit = chars.concatToString()
+        }
+    }
+
+    if (readdUppercase) textToCommit = textToCommit.uppercase()
+    textToCommit = TextInsertionComposer.prepareForImeCommit(
+        before = ic.getTextBeforeCursor(2, 0),
+        after = ic.getTextAfterCursor(2, 0),
+        inserted = textToCommit,
+    ) ?: return false
+    return textToCommit.isNotEmpty() && ic.commitText(textToCommit, 1)
 }
 
 class VoiceInputLifecycleOwner : LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOwner {

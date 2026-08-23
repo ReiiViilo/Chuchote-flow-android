@@ -11,7 +11,9 @@ import android.graphics.PorterDuffColorFilter
 import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
+import android.os.SystemClock
 import android.view.View
+import dev.soupslurpr.transcribro.recognitionservice.audio.TranscriptionProgressEstimator
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.min
@@ -67,6 +69,10 @@ class OrbView(context: Context) : View(context) {
     private var pulse = 0f
     private var idlePulse = 0f
     private var progress = 0f
+    private var transcriptionStartedAtMs = 0L
+    private var audioDurationMs = 0L
+    private var completedSegments = 0
+    private var totalSegments = 0
     private var flash = 0f
     private var radius = 0f
 
@@ -98,11 +104,30 @@ class OrbView(context: Context) : View(context) {
         transcribing = value
         pulse = 0f
         progress = 0f
+        transcriptionStartedAtMs = if (value) SystemClock.elapsedRealtime() else 0L
+        if (!value) {
+            audioDurationMs = 0L
+            completedSegments = 0
+            totalSegments = 0
+        }
+        postInvalidateOnAnimation()
+    }
+
+    /** Lie la vitesse du dégradé à la longueur et aux segments réels. */
+    fun setTranscriptionProgress(
+        audioDurationMs: Long,
+        completedSegments: Int,
+        totalSegments: Int,
+    ) {
+        this.audioDurationMs = audioDurationMs.coerceAtLeast(0L)
+        this.completedSegments = completedSegments.coerceAtLeast(0)
+        this.totalSegments = totalSegments.coerceAtLeast(0)
         postInvalidateOnAnimation()
     }
 
     /** Éclat vert bref au moment où le texte part s'insérer. */
     fun flashSuccess() {
+        progress = 1f
         flash = 1f
         postInvalidateOnAnimation()
     }
@@ -112,6 +137,11 @@ class OrbView(context: Context) : View(context) {
         // le silence, ce qui laissait croire qu'il captait la voix.
         val normalized = ((db - NOISE_FLOOR_DB) / (0f - NOISE_FLOOR_DB)).coerceIn(0f, 1f)
         targetLevel = if (normalized <= GATE) 0f else (normalized - GATE) / (1f - GATE)
+    }
+
+    override fun performClick(): Boolean {
+        super.performClick()
+        return true
     }
 
     /**
@@ -223,10 +253,20 @@ class OrbView(context: Context) : View(context) {
         }
         if (transcribing) {
             pulse += PULSE_STEP
-            // Approche asymptotique du vert : la teinte s'en rapproche sans
-            // jamais l'atteindre d'elle-même — le vert plein est réservé au
-            // moment où le texte part vraiment.
-            progress += (1f - progress) * PROGRESS_EASE
+            val elapsed = (SystemClock.elapsedRealtime() - transcriptionStartedAtMs)
+                .coerceAtLeast(0L)
+            // La durée audio ralentit réellement la couleur. Les segments
+            // terminés font avancer l'estimation, mais le vert plein reste
+            // réservé au callback de réussite.
+            progress = maxOf(
+                progress,
+                TranscriptionProgressEstimator.estimate(
+                    elapsedMs = elapsed,
+                    audioDurationMs = audioDurationMs,
+                    completedSegments = completedSegments,
+                    totalSegments = totalSegments,
+                ),
+            )
         }
         if (flash > 0f) flash = (flash - FLASH_DECAY).coerceAtLeast(0f)
 
@@ -251,7 +291,7 @@ class OrbView(context: Context) : View(context) {
         // le vert pendant la transcription, vert plein à l'éclat de livraison.
         val frontColor = when {
             flash > 0f -> GREEN
-            transcribing -> lerpColor(AMBER, GREEN, progress)
+            transcribing -> transcriptionColor(progress)
             else -> FRONT_COLOR
         }
         val backColor = when {
@@ -332,6 +372,19 @@ class OrbView(context: Context) : View(context) {
         )
     }
 
+    private fun transcriptionColor(value: Float): Int {
+        val progress = value.coerceIn(0f, 1f)
+        return if (progress < YELLOW_THRESHOLD) {
+            lerpColor(RED_ORANGE, YELLOW, progress / YELLOW_THRESHOLD)
+        } else {
+            lerpColor(
+                YELLOW,
+                GREEN,
+                (progress - YELLOW_THRESHOLD) / (1f - YELLOW_THRESHOLD),
+            )
+        }
+    }
+
     companion object {
         private const val POINT_COUNT = 190
         private const val SMOOTHING = 0.22f
@@ -341,8 +394,8 @@ class OrbView(context: Context) : View(context) {
         private const val NOISE_FLOOR_DB = -45f
         private const val GATE = 0.22f
         private const val PULSE_STEP = 0.075f
-        private const val PROGRESS_EASE = 0.006f
         private const val FLASH_DECAY = 0.045f
+        private const val YELLOW_THRESHOLD = 0.50f
 
         // Cadence du repos : ~12 images par seconde suffisent à une dérive
         // lente, pour une fraction du coût d'une animation pleine cadence.
@@ -353,7 +406,8 @@ class OrbView(context: Context) : View(context) {
 
         private val FRONT_COLOR = Color.rgb(150, 245, 255)
         private val BACK_COLOR = Color.rgb(120, 120, 240)
-        private val AMBER = Color.rgb(255, 205, 90)
+        private val RED_ORANGE = Color.rgb(255, 92, 55)
+        private val YELLOW = Color.rgb(255, 211, 72)
         private val GREEN = Color.rgb(105, 240, 155)
     }
 }
