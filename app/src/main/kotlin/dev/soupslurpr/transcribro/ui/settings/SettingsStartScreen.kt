@@ -42,6 +42,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -54,8 +55,11 @@ import dev.soupslurpr.transcribro.R
 import dev.soupslurpr.transcribro.dataStore
 import dev.soupslurpr.transcribro.overlay.FloatingWidgetService
 import dev.soupslurpr.transcribro.overlay.TextInsertionAccessibilityService
+import dev.soupslurpr.transcribro.overlay.WidgetLaunchActivity
 import dev.soupslurpr.transcribro.preferences.PreferencesViewModel
 import dev.soupslurpr.transcribro.remote.RemoteTranscriptionSettings
+import dev.soupslurpr.transcribro.remote.RemoteConfigurationPolicy
+import dev.soupslurpr.transcribro.remote.RemoteConfigurationSnapshot
 import dev.soupslurpr.transcribro.ui.reusablecomposables.ScreenLazyColumn
 
 @OptIn(ExperimentalPermissionsApi::class)
@@ -89,14 +93,39 @@ fun SettingsStartScreen(
         mutableStateOf(Settings.canDrawOverlays(context))
     }
 
-    var isTextInsertionEnabled by rememberSaveable {
+    var isTextInsertionConnected by rememberSaveable {
         mutableStateOf(TextInsertionAccessibilityService.isConnected())
+    }
+    var isTextInsertionEnabledInSettings by rememberSaveable {
+        mutableStateOf(TextInsertionAccessibilityService.isEnabledInSettings(context))
+    }
+    var autoShowOrb by rememberSaveable {
+        mutableStateOf(TextInsertionAccessibilityService.isAutoShowOrbEnabled(context))
     }
 
     val remoteSettings = remember { RemoteTranscriptionSettings(context) }
-    var remoteEnabled by rememberSaveable { mutableStateOf(remoteSettings.enabled) }
-    var remoteBaseUrl by rememberSaveable { mutableStateOf(remoteSettings.baseUrl) }
-    var remoteToken by rememberSaveable { mutableStateOf(remoteSettings.token) }
+    val initialRemoteConfiguration = remember(remoteSettings) { remoteSettings.snapshot() }
+    var remoteEnabled by rememberSaveable { mutableStateOf(initialRemoteConfiguration.enabled) }
+    var remoteBaseUrl by rememberSaveable { mutableStateOf(initialRemoteConfiguration.baseUrl) }
+    // Un secret ne doit pas être recopié dans le SavedState de l'Activity.
+    // Après rotation, il est relu depuis le stockage privé explicitement exclu
+    // des sauvegardes et transferts Android.
+    var remoteToken by remember { mutableStateOf(initialRemoteConfiguration.token) }
+    var remoteConfigurationError by rememberSaveable { mutableStateOf<String?>(null) }
+
+    fun currentRemoteConfiguration() = RemoteConfigurationSnapshot(
+        enabled = remoteEnabled,
+        baseUrl = remoteBaseUrl,
+        token = remoteToken,
+    )
+
+    fun persistRemoteConfiguration(candidate: RemoteConfigurationSnapshot) {
+        val persisted = remoteSettings.replace(candidate)
+        remoteEnabled = persisted.enabled
+        remoteBaseUrl = persisted.baseUrl
+        remoteToken = persisted.token
+        remoteConfigurationError = null
+    }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -105,7 +134,10 @@ fun SettingsStartScreen(
                 // Les autorisations se donnent dans les réglages système : il
                 // faut donc les relire au retour dans l'application.
                 canDrawOverlays = Settings.canDrawOverlays(context)
-                isTextInsertionEnabled = TextInsertionAccessibilityService.isConnected()
+                isTextInsertionConnected = TextInsertionAccessibilityService.isConnected()
+                isTextInsertionEnabledInSettings =
+                    TextInsertionAccessibilityService.isEnabledInSettings(context)
+                autoShowOrb = TextInsertionAccessibilityService.isAutoShowOrbEnabled(context)
             }
         }
 
@@ -130,9 +162,43 @@ fun SettingsStartScreen(
                 ) {
                     Text(
                         "Widget de dictée flottant : une bulle posée par-dessus toutes les applications. " +
-                                "Touche-la — ou secoue le téléphone — parle, puis confirme avec ✓. " +
-                                "Le texte s'insère dans le champ de saisie actif."
+                                "Touche-la, parle, puis confirme avec ✓. Une secousse rappelle seulement " +
+                                "une bulle masquée; le texte s'insère dans le champ de saisie actif."
                     )
+                    Spacer(Modifier.padding(8.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .toggleable(
+                                value = autoShowOrb,
+                                onValueChange = { enabled ->
+                                    autoShowOrb = enabled
+                                    TextInsertionAccessibilityService.setAutoShowOrbEnabled(
+                                        context,
+                                        enabled,
+                                    )
+                                },
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Switch(
+                            checked = autoShowOrb,
+                            onCheckedChange = null,
+                        )
+                        Spacer(Modifier.padding(8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "Afficher l’orbe dans les champs de texte",
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "Activé par défaut. Si le widget n’est plus actif, une petite orbe " +
+                                    "réapparaît au focus; le micro ne démarre qu’après ton tap sur " +
+                                    "l’orbe principale.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
                     Spacer(Modifier.padding(8.dp))
                     FilledTonalButton(
                         enabled = !canDrawOverlays,
@@ -156,8 +222,10 @@ fun SettingsStartScreen(
                         }
                     ) {
                         Text(
-                            if (isTextInsertionEnabled) {
+                            if (isTextInsertionConnected) {
                                 "2. Accessibilité activée ✓ (rouvrir les réglages)"
+                            } else if (isTextInsertionEnabledInSettings) {
+                                "2. Activée mais interrompue — désactiver puis réactiver"
                             } else {
                                 "2. Activer Chuchote Flow dans Accessibilité"
                             }
@@ -167,9 +235,7 @@ fun SettingsStartScreen(
                     FilledTonalButton(
                         enabled = canDrawOverlays && microphonePermissionState.status.isGranted,
                         onClick = {
-                            context.startForegroundService(
-                                Intent(context, FloatingWidgetService::class.java)
-                            )
+                            context.startActivity(Intent(context, WidgetLaunchActivity::class.java))
                         }
                     ) {
                         Text("3. Démarrer le widget")
@@ -203,9 +269,16 @@ fun SettingsStartScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Switch(
                             checked = remoteEnabled,
-                            onCheckedChange = {
-                                remoteEnabled = it
-                                remoteSettings.enabled = it
+                            onCheckedChange = { requested ->
+                                val current = currentRemoteConfiguration()
+                                if (requested && !current.hasCompleteEndpoint) {
+                                    remoteConfigurationError =
+                                        "Entre une adresse et un jeton avant d'activer le relais."
+                                } else {
+                                    persistRemoteConfiguration(
+                                        RemoteConfigurationPolicy.withEnabled(current, requested),
+                                    )
+                                }
                             }
                         )
                         Spacer(Modifier.padding(8.dp))
@@ -225,36 +298,52 @@ fun SettingsStartScreen(
                             // collé ici remplit les deux champs d'un coup —
                             // c'est le format produit par « Partager ».
                             if (valeur.contains('#')) {
-                                val adresse = valeur.substringBefore('#').trim()
-                                val jeton = valeur.substringAfter('#').trim()
-                                remoteBaseUrl = adresse
-                                remoteSettings.baseUrl = adresse
-                                if (jeton.isNotEmpty()) {
-                                    remoteToken = jeton
-                                    remoteSettings.token = jeton
+                                val imported = RemoteConfigurationPolicy.importSharedLink(
+                                    current = currentRemoteConfiguration(),
+                                    value = valeur,
+                                )
+                                if (imported == null) {
+                                    remoteConfigurationError =
+                                        "Le lien doit contenir une adresse et un jeton après #."
+                                } else {
+                                    persistRemoteConfiguration(imported)
                                 }
                             } else {
-                                remoteBaseUrl = valeur
-                                remoteSettings.baseUrl = valeur
+                                persistRemoteConfiguration(
+                                    RemoteConfigurationPolicy.editBaseUrl(
+                                        current = currentRemoteConfiguration(),
+                                        value = valeur,
+                                    ),
+                                )
                             }
                         },
                         singleLine = true,
                         label = { Text("Adresse du relais (ou lien complet)") },
                         placeholder = { Text("https://mon-relais.vercel.app") },
                         supportingText = {
-                            Text("Astuce : colle un lien de configuration « adresse#jeton » et les deux champs se remplissent.")
+                            Text(
+                                remoteConfigurationError
+                                    ?: "Modifier l'adresse désactive le relais et efface l'ancien jeton. " +
+                                        "Un lien « adresse#jeton » remplace les deux ensemble.",
+                            )
                         },
+                        isError = remoteConfigurationError != null,
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.padding(4.dp))
                     OutlinedTextField(
                         value = remoteToken,
                         onValueChange = {
-                            remoteToken = it
-                            remoteSettings.token = it
+                            persistRemoteConfiguration(
+                                RemoteConfigurationPolicy.editToken(
+                                    current = currentRemoteConfiguration(),
+                                    value = it,
+                                ),
+                            )
                         },
                         singleLine = true,
                         label = { Text("Jeton") },
+                        visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier.fillMaxWidth()
                     )
                     if (remoteBaseUrl.isNotBlank() && remoteToken.isNotBlank()) {

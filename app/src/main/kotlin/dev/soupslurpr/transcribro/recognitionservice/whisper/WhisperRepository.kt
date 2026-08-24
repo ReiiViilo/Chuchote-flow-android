@@ -1,9 +1,8 @@
 package dev.soupslurpr.transcribro.recognitionservice.whisper
 
-import androidx.compose.runtime.MutableState
-import androidx.compose.runtime.mutableStateOf
 import com.whispercpp.whisper.WhisperContext
 import dev.soupslurpr.transcribro.remote.RemoteTranscriber
+import java.util.concurrent.atomic.AtomicReference
 
 /** Le texte transcrit, et le chemin qui l'a produit — utile pour comprendre
  * d'où vient la lenteur quand il y en a. */
@@ -20,12 +19,13 @@ class WhisperRepository(
     private val remoteTranscriber: RemoteTranscriber? = null,
 ) {
 
-    private var whisperContext: MutableState<WhisperContext?> =
-        mutableStateOf(null)
+    private val whisperContext = AtomicReference<WhisperContext?>(null)
 
     private suspend fun loadWhisperContextIfNull() {
-        if (whisperContext.value == null) {
-            whisperContext.value = whisperLocalDataSource.getWhisperContext()
+        if (whisperContext.get() == null) {
+            whisperLocalDataSource.publishWhisperContext { created ->
+                whisperContext.compareAndSet(null, created)
+            }
         }
     }
 
@@ -52,7 +52,9 @@ class WhisperRepository(
             buffer = newBuffer
         }
 
-        val transcript = whisperContext.value?.transcribeData(buffer, ((data.size / 16000f) * 1000f).toLong()) ?: ""
+        val transcript = whisperContext.get()
+            ?.transcribeData(buffer, ((data.size / 16000f) * 1000f).toLong())
+            ?: ""
         return ResultatTranscription(
             transcript.removeSuffix(" ."), // remove hallucination
             viaRelais = false,
@@ -60,7 +62,7 @@ class WhisperRepository(
     }
 
     suspend fun release() {
-        whisperContext.value?.release()
+        whisperContext.getAndSet(null)?.release()
     }
 
     companion object {

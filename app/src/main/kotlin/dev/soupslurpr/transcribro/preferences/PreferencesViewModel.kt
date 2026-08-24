@@ -3,6 +3,7 @@ package dev.soupslurpr.transcribro.preferences
 import androidx.compose.runtime.mutableStateOf
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -46,8 +47,14 @@ class PreferencesViewModel(private val dataStore: DataStore<Preferences>) : View
                     acceptedPrivacyPolicyAndLicense = Pair(
                         uiState.value.acceptedPrivacyPolicyAndLicense.first,
                         mutableStateOf(
-                            preferences[uiState.value.acceptedPrivacyPolicyAndLicense.first] ?: uiState.value
-                                .acceptedPrivacyPolicyAndLicense.second.value
+                            PrivacyConsent.isCurrentPolicyAccepted(
+                                currentPolicyAccepted = preferences[
+                                    uiState.value.acceptedPrivacyPolicyAndLicense.first
+                                ],
+                                previousPolicyAccepted = preferences[
+                                    booleanPreferencesKey(PrivacyConsent.PREVIOUS_POLICY_PREFERENCE)
+                                ],
+                            )
                         )
                     ),
                     autoSwitchToPreviousInputMethod = Pair(

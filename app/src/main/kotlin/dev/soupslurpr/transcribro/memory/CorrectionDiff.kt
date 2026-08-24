@@ -39,26 +39,28 @@ object CorrectionDiff {
 
         var i = 0
         var j = 0
+        var debutI = 0
+        var debutJ = 0
         while (i < motsAvant.size && j < motsApres.size) {
             if (motsAvant[i].coeur == motsApres[j].coeur) {
+                retoucheEnProposition(
+                    motsAvant.subList(debutI, i),
+                    motsApres.subList(debutJ, j),
+                )?.let(propositions::add)
                 i++
                 j++
+                debutI = i
+                debutJ = j
                 continue
             }
-            // Début d'une zone retouchée : avancer jusqu'à retrouver
-            // l'alignement, en gardant les deux versants de la retouche.
-            val debutI = i
-            val debutJ = j
-            while (i < motsAvant.size && j < motsApres.size &&
-                motsAvant[i].coeur != motsApres[j].coeur
-            ) {
-                if (lcs[i + 1][j] >= lcs[i][j + 1]) i++ else j++
-            }
-            retoucheEnProposition(
-                motsAvant.subList(debutI, i),
-                motsApres.subList(debutJ, j),
-            )?.let { propositions.add(it) }
+            if (lcs[i + 1][j] >= lcs[i][j + 1]) i++ else j++
         }
+        // La dernière substitution n'est suivie d'aucun mot commun qui
+        // déclencherait le flush ci-dessus. Elle doit donc être traitée ici.
+        retoucheEnProposition(
+            motsAvant.subList(debutI, motsAvant.size),
+            motsApres.subList(debutJ, motsApres.size),
+        )?.let(propositions::add)
 
         return propositions.distinct().take(MAX_PROPOSITIONS)
     }
