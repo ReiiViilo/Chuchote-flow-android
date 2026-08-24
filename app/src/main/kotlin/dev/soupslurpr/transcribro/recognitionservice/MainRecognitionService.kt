@@ -23,6 +23,7 @@ import dev.soupslurpr.transcribro.recognitionservice.audio.SegmentText
 import dev.soupslurpr.transcribro.recognitionservice.audio.SegmentTranscriber
 import dev.soupslurpr.transcribro.recognitionservice.audio.SequentialTranscriptionPipeline
 import dev.soupslurpr.transcribro.recognitionservice.audio.TranscriptionSessionGate
+import dev.soupslurpr.transcribro.recognitionservice.audio.VadWindowBuffer
 import dev.soupslurpr.transcribro.recognitionservice.silerovad.SileroVadApi
 import dev.soupslurpr.transcribro.recognitionservice.silerovad.SileroVadDetector
 import dev.soupslurpr.transcribro.recognitionservice.silerovad.SileroVadLocalDataSource
@@ -103,6 +104,9 @@ class MainRecognitionService : RecognitionService() {
         private const val SAMPLE_RATE = 16_000
         private const val MAX_SEGMENT_SAMPLES = 480_000 // 30 secondes
         private const val SPEECH_START_PAD_SAMPLES = 24_000L
+
+        // Plus petit bloc que Silero accepte à 16 kHz (16000 / 512 = 31.25).
+        private const val MIN_VAD_WINDOW_SAMPLES = 512
         private const val SILENCE_DB = -60f
         private const val AUDIO_DIRECTORY = "dictations"
     }
@@ -284,6 +288,7 @@ class MainRecognitionService : RecognitionService() {
             val buffer = ShortArray(bufferSamples)
             val detectedSegments = mutableListOf<AudioSegment>()
             var activeSpeechStart: Long? = null
+            val vadWindowBuffer = VadWindowBuffer(MIN_VAD_WINDOW_SAMPLES)
 
             while (!sessionControl.stopRequested && currentCoroutineContext().isActive) {
                 val count = try {
@@ -304,8 +309,9 @@ class MainRecognitionService : RecognitionService() {
                 signalRms(listener, buffer, count, sessionGate)
 
                 // Le détecteur voit les blocs l'un après l'autre sur cette
-                // même coroutine. Son compteur correspond donc au WAV.
-                val vadBuffer = if (count == buffer.size) buffer else buffer.copyOf(count)
+                // même coroutine. Son compteur correspond donc au WAV — voir
+                // VadWindowBuffer pour le sort des lectures partielles.
+                val vadBuffer = vadWindowBuffer.feed(buffer, count) ?: continue
                 ensureSessionActive(sessionGate)
                 val event = sileroVadRepository.detect(vadBuffer).orEmpty()
                 ensureSessionActive(sessionGate)
