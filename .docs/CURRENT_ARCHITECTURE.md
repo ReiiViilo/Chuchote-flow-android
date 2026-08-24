@@ -2,7 +2,8 @@
 
 > **Type** : explication technique
 > **Statut** : point de départ audité; candidate `codex/android-alpha` implémentée, preuve machine détaillée dans `BUILD_AND_VALIDATION.md`, validation appareil ouverte
-> **Snapshot** : `Chuchote-flow-android@552c4282595922f5a7f1eeb5c6140c4b24f9dfbf`
+> **Base auditée** : `main@552c4282595922f5a7f1eeb5c6140c4b24f9dfbf`
+> **Candidate décrite** : tip de `codex/android-alpha`; vérifier son SHA à la reprise
 > **Sources principales** : `app/src/main/`, `lib/src/main/`
 
 ## Vue d'ensemble
@@ -144,7 +145,7 @@ L'activité principale ne contient pas un gros bouton central de dictée : l'exp
 - mono;
 - PCM signé 16 bits.
 
-Dans le worktree de remédiation, chaque bloc est immédiatement ajouté à un
+Dans la branche alpha, chaque bloc est immédiatement ajouté à un
 WAV `.part` réparable. Le VAD s'exécute sur la même coroutine, les bornes sont
 normalisées, puis le WAV est relu par segments d'au plus 30 secondes. L'audio
 complet n'est plus conservé dans le tas Java.
@@ -204,7 +205,8 @@ contiennent ni corps HTTP ni message d'exception.
 
 Une dictée dont certains segments sont distants et d'autres locaux reçoit la source `mixte`. Références : [`MainRecognitionService.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/recognitionservice/MainRecognitionService.kt#L390-L525) et [`RemoteTranscriber.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/remote/RemoteTranscriber.kt#L14-L37).
 
-Le contrat serveur canonique est documenté dans [RELAY_API.md](../../Chuchote-Flow/.docs/RELAY_API.md).
+Le contrat serveur canonique est documenté dans
+[RELAY_API.md](https://github.com/ReiiViilo/Chuchote-Flow/blob/ab0479f136bc3f6fc0d9dffc22ffa08a58fd4552/.docs/RELAY_API.md).
 
 ## Sortie et historique
 
@@ -224,7 +226,7 @@ Références : [`MainRecognitionService.kt`](../app/src/main/kotlin/dev/soupslur
 Sur la version `9-debug`, `logcat` a confirmé des
 `ConcurrentModificationException` et des `OutOfMemoryError`. L'ancienne boucle
 lançait une coroutine par tampon autour d'un VAD à état, de listes mutables et
-d'un contexte Whisper partagés. Le worktree remplace ce modèle par :
+d'un contexte Whisper partagés. La branche alpha remplace ce modèle par :
 
 - une seule coroutine de capture/VAD;
 - aucun `MutableList<Short>` pour l'audio complet;
@@ -267,5 +269,7 @@ Changer cette identité peut installer une nouvelle application séparée et dé
 - UUID global de dictée;
 - post-traitement LLM;
 - apprentissage statistique;
-- tests instrumentés des arbres d'accessibilité réels. La migration SQLite
-  v2 → v3 possède maintenant un test instrumenté distinct sur la variante QA.
+- tests instrumentés des arbres d'accessibilité réels. Six scénarios
+  instrumentés isolent plutôt la migration SQLite, la réhabilitation audio, le
+  curseur de maintenance et les échecs partiels de démarrage; ils compilent sur
+  la variante QA et attendent leur relance commune sur appareil.

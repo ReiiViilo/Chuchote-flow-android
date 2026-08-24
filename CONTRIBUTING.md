@@ -1,39 +1,54 @@
-# Contributing
+# Contribuer à Chuchote Flow Android
 
-Thanks for your interest in contributing!
+Ce dépôt est le fork Android de Chuchote Flow, basé sur Transcribro. Pour
+signaler un bogue ou proposer une fonctionnalité, ouvrir d'abord une issue dans
+`ReiiViilo/Chuchote-flow-android` en décrivant le comportement attendu, les
+applications Android concernées et la preuve disponible.
 
-If you want to suggest a feature or notify us about a bug, please use the issue tracker.
+## Cloner correctement
 
-This project uses Git submodules. Clone it using the `--recurse-submodules` option:
+Le projet utilise `whisper.cpp` comme sous-module :
 
-```bash
-git clone --recurse-submodules https://github.com/soupslurpr/Transcribro
+```powershell
+git clone --recurse-submodules https://github.com/ReiiViilo/Chuchote-flow-android.git
+Set-Location Chuchote-flow-android
+git submodule update --init --recursive
 ```
 
-Before working on a feature, please make sure to discuss the planned implementation in the issue for the feature and get approval from @soupslurpr to ensure it meets the project's requirements.
+Pour reprendre la candidate Android actuelle plutôt que `main`, ajouter
+`--branch codex/android-alpha` à la commande de clone. Voir la
+[note de reprise Claude](.docs/HANDOFF_CLAUDE.md) avant toute modification.
 
-If you need help with development or have questions, it's recommended to join the Transcribro space on matrix at
-https://matrix.to/#/#transcribro:matrix.org and join the Transcribro General room and ask for help there from
-[soupslurpr](https://github.com/soupslurpr), the lead developer.
+## Environnement et vérification
 
-As of now, translations are not accepted.
+Le build exige JDK 17, Android SDK 36, Build Tools 36.0.0, NDK
+27.2.12479018 et CMake. Le modèle Whisper est téléchargé automatiquement au
+premier build et ne doit pas être ajouté à Git.
 
-Here are some things to know so that your time isn't potentially wasted.
-Transcribro currently depends on whisper.cpp to run the OpenAI Whisper models. You need C++ tooling installed
-to compile. There are plans to move to using Rust to run the models once a machine learning library that can run
-Whisper as fast as whisper.cpp is available.
+Gate local attendu :
 
-[//]: # (Transcribro has some Rust code that gets compiled into a library.)
+```powershell
+.\gradlew.bat testDebugUnitTest lintDebug compileQaAndroidTestKotlin assembleQa --no-daemon --no-build-cache
+```
 
-[//]: # (The source code can be found at the transcribro_rs directory.)
+Les tests sur téléphone constituent une preuve distincte. Ne pas annoncer une
+capacité comme validée sur appareil à partir d'un test unitaire, d'un build ou
+d'une ancienne candidate.
 
-[//]: # (Look at useful-commands.txt for useful commands and info that will probably help with building it.)
+## Règles de contribution
 
-[//]: # ()
+- utiliser Kotlin et Jetpack Compose pour l'application, sauf contrainte native
+  explicitement justifiée;
+- préserver l'attribution et les licences de Transcribro, whisper.cpp, Whisper
+  et Silero VAD;
+- ajouter un test de non-régression pour chaque bogue corrigé;
+- mettre à jour le document propriétaire dans [`.docs`](.docs/README.md) avec
+  le même changement;
+- ne jamais committer APK, modèle Whisper, audio, base SQLite, clé, jeton,
+  `local.properties` ou journal d'appareil;
+- garder les preuves machine, la validation appareil et la validation humaine
+  explicitement séparées.
 
-[//]: # (Java code is not accepted, we will only use Kotlin and Rust if needed. Unsafe Rust code should be avoided, but if)
-
-[//]: # (there is truly no other way, it will be heavily scrutinized.)
-
-Views should be avoided, and only Jetpack Compose should be used unless there is no other way, but it
-has to be vital.
+Pour contribuer au projet Transcribro d'origine plutôt qu'à ce fork, consulter
+son dépôt et ses règles propres :
+[soupslurpr/Transcribro](https://github.com/soupslurpr/Transcribro).

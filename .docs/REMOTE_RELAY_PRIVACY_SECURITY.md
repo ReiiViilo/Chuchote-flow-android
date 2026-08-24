@@ -2,7 +2,8 @@
 
 > **Type** : référence de frontières de confiance
 > **Statut** : comportement observé et divulgations alignées dans la candidate; preuve machine détaillée dans `BUILD_AND_VALIDATION.md`, recette réseau réelle ouverte
-> **Snapshot** : `Chuchote-flow-android@552c4282595922f5a7f1eeb5c6140c4b24f9dfbf`
+> **Base auditée** : `main@552c4282595922f5a7f1eeb5c6140c4b24f9dfbf`
+> **Candidate décrite** : tip de `codex/android-alpha`; vérifier son SHA à la reprise
 
 ## Permissions déclarées
 
@@ -49,7 +50,7 @@ borné à 262 144 caractères et `text` doit être une vraie chaîne JSON; un ch
 absent, `null`, numérique, objet ou tableau est invalide et entraîne le repli
 local. Références : [`RemoteTranscriber.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/remote/RemoteTranscriber.kt) et [`RemoteResponseDecoder.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/remote/RemoteResponseDecoder.kt).
 
-Le contrat serveur, les variables d'environnement et les erreurs sont documentés dans la source canonique [RELAY_API.md](../../Chuchote-Flow/.docs/RELAY_API.md).
+Le contrat serveur, les variables d'environnement et les erreurs sont documentés dans la source canonique [RELAY_API.md](https://github.com/ReiiViilo/Chuchote-Flow/blob/ab0479f136bc3f6fc0d9dffc22ffa08a58fd4552/.docs/RELAY_API.md).
 
 ## Frontières de données
 

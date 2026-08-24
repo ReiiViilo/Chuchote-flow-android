@@ -1,5 +1,101 @@
 # Historique des correctifs
 
+## 2026-08-23 — WAV historiques présents mais déclarés introuvables
+
+### Symptôme observable
+
+- Installer la candidate QA par-dessus une version qui écrivait ses dictées
+  dans `files/dictations`.
+- Ouvrir l'historique : les lignes concernées affichent « Audio introuvable »
+  et le bouton de reprise reste désactivé, bien que les WAV existent toujours
+  dans le stockage privé de l'application.
+- Sur l'appareil diagnostiqué, environ 1,465 Go étaient présents sous
+  `files/dictations`, tandis que le nouveau `no_backup/dictations` était vide.
+  Les chemins SQLite absolus historiques étaient rejetés par le store et le
+  gestionnaire de reprise.
+
+### Surface et domaine
+
+- Persistance SQLite v3, résolution des fichiers audio privés, historique et
+  parcours « Réessayer ».
+- Le défaut touchait les WAV hérités sous `filesDir/dictations`; les nouvelles
+  captures sous `noBackupFilesDir/dictations` n'étaient pas la cause.
+
+### Détection
+
+- Retour d'Olivier indiquant que l'audio était sauvegardé sans pouvoir être
+  relancé, puis inventaire ADB du stockage privé et comparaison avec les chemins
+  `audio_path` de SQLite.
+- La validation finale du correctif a été ramenée à des tests unitaires et à six
+  scénarios Android instrumentés isolés. Leur compilation est acquise; leur
+  exécution commune sur le dernier diff reste ouverte.
+
+### Hypothèses examinées
+
+1. **Les WAV avaient été supprimés pendant la mise à jour** — écartée par
+   l'inventaire du dossier privé historique; aucune copie ou migration physique
+   n'était nécessaire pour les rendre de nouveau adressables.
+2. **Les WAV étaient tous corrompus** — insuffisant pour expliquer le défaut :
+   le rejet se produisait à la validation du chemin, avant toute inspection de
+   l'en-tête. La validité est maintenant vérifiée fichier par fichier en lecture
+   seule avant toute réhabilitation.
+3. **Le chemin historique sortait du stockage privé** — écartée pour les cas
+   observés : ils pointaient sous le `filesDir` de la même application. Les
+   chemins externes, les préfixes siblings, le traversal et les fichiers non-WAV
+   restent refusés.
+
+### Cause racine
+
+- La nouvelle capture écrit sous `noBackupFilesDir/dictations`, mais les deux
+  validateurs n'autorisaient plus que cette racine.
+- Les lignes existantes conservaient légitimement un chemin absolu sous
+  `filesDir/dictations`. Elles recevaient alors `audio_missing` ou
+  `retry_audio_missing`; ces erreurs durables désactivaient ensuite la politique
+  de reprise même si le fichier était toujours présent.
+
+### Correctif
+
+- Un résolveur unique autorise exactement deux racines privées bornées :
+  `noBackupFilesDir/dictations` et `filesDir/dictations`.
+- Les nouvelles lignes SQLite conservent le chemin absolu de la base v3 afin
+  que l'APK de rollback puisse encore les relire. Le résolveur comprend aussi
+  les références relatives typées, mais ce patch de compatibilité n'en écrit
+  aucune; le contrat `audio_root + audio_key` est différé à une migration
+  expand/contract dédiée.
+- Au démarrage, seules les lignes marquées `audio_missing` ou
+  `retry_audio_missing` sont réévaluées. Un WAV RIFF/WAVE mono 16 bits à 16 kHz, non
+  vide et réellement privé fait effacer l'erreur et recalculer la durée; le
+  transcript, l'état et le chemin sont conservés.
+- Cette compatibilité n'effectue aucune copie, aucun déplacement, aucune
+  récupération de `.part` et aucune mutation du WAV. Une migration physique
+  éventuelle reste un chantier séparé.
+
+### Test de non-régression
+
+- `PrivateAudioPathResolverTest` couvre les deux racines, les chemins absolus
+  historiques, la lecture de références relatives typées, le traversal, les préfixes
+  siblings, les chemins relatifs ambigus, les sorties du stockage privé et les
+  extensions non-WAV.
+- `HistoricalAudioRehabilitationTest` couvre les deux seuls codes réparables,
+  les WAV absents/corrompus/incompatibles, la frontière OOM et vérifie que les
+  octets comme l'horodatage du WAV restent inchangés.
+- Premier RED : le test ne compilait pas sans le résolveur. Contre-test RED :
+  un chemin contenant `sub/../` restait accepté avant le rejet lexical.
+- Sensibilité confirmée : retirer temporairement la racine `files/dictations`
+  fait échouer le scénario historique; la restaurer le remet au vert.
+- Le gate complet `testDebugUnitTest lintDebug compileQaAndroidTestKotlin
+  assembleQa --no-daemon --no-build-cache` passe sans échec. Les six scénarios
+  instrumentés existent et compilent. Le dernier rapport appareil durable
+  couvre cinq scénarios d'une candidate alpha5 antérieure; l'exécution des six
+  scénarios sur le dernier diff n'a pas encore été réalisée.
+
+### Ce qui l'aurait attrapé plus tôt
+
+- Un test de compatibilité entre l'ancienne racine `filesDir` et la nouvelle
+  racine `noBackupFilesDir` avant publication.
+- Des références persistées indépendantes du chemin absolu de l'installation,
+  accompagnées d'un résolveur central plutôt que deux validateurs dupliqués.
+
 ## 2026-08-23 — Deuxième dictée refusée dans le même champ
 
 ### Symptôme observable
@@ -164,12 +260,23 @@
   parce que les nouveaux composants n'existaient pas; une première candidate a
   ensuite passé 17 tests et Android Lint. Les garde-fous ajoutés après cette
   preuve ont porté la suite à 111 scénarios. Les contre-tests de cible, reprise,
-  confidentialité, service microphone, relais et frontière native portent le
-  gel final à 159 scénarios dans 34 suites/fichiers; le gate courant est vert.
-- `ChuchoteStoreMigrationTest` crée une base v2 synthétique exclusivement dans
-  la variante `.qa` et vérifie sur Android 16 la conservation de l'ancienne
-  dictée pendant la migration vers v3; 1 test instrumenté passe sur le Samsung
-  SM-S721W.
+  confidentialité, service microphone, relais et frontière native, puis les
+  pressions du résolveur audio, portent le gel courant à 182 scénarios dans 38
+  suites/fichiers; 1 scénario d'intégration symlink est ignoré faute de privilège
+  Windows, mais la sortie canonique simulée est couverte sans skip et le gate
+  courant est vert.
+- `ChuchoteStoreMigrationTest` utilise pour chaque scénario un cache UUID, une
+  base et deux racines audio jetables, distincts de `chuchote.db`. Il vérifie sur
+  Android 16 la conservation de l'ancienne dictée pendant la migration v3, puis
+  la réhabilitation minimale d'un WAV historique et l'écriture absolue d'un
+  nouveau `audio_path`. Un troisième force un échec SQLite et vérifie que
+  l'historique, le dictionnaire et la récupération des captures interrompues
+  restent disponibles. Un quatrième place un WAV valide derrière 100 chemins
+  invalides permanents, vérifie leurs diagnostics et prouve que le curseur
+  SQLite revient ensuite vers un ID inférieur. Un cinquième prouve qu'un
+  démarrage sans mutation ne relit pas tout l'historique. Un sixième force une
+  récupération partielle et vérifie la projection comme la cause originale. Les
+  6 tests instrumentés compilent; leur relance commune attend la reconnexion ADB.
 - Validation produit encore requise sur l'appareil avec la variante QA :
   dictée supérieure à deux minutes, interruption simulée et bouton Réessayer.
 
@@ -312,9 +419,14 @@
 ### État de preuve
 
 - Les fichiers Kotlin/XML passent les contrôles statiques et `git diff --check`.
-- La suite exécutée contient 159 scénarios unitaires dans 34 suites/fichiers,
-  sans échec, plus 1 scénario instrumenté déclaré.
-- `testDebugUnitTest`, `lintDebug` et `assembleQa` passent sur le diff courant.
+- La suite exécutée contient 182 scénarios unitaires dans 38 suites/fichiers :
+  181 réussissent et 1 scénario d'intégration symlink est ignoré faute de
+  privilège Windows. Le cas canonique équivalent reste obligatoire et passe.
+- Six scénarios instrumentés SQLite/audio sont définis et compilés avec un cache
+  UUID nettoyé; leur relance commune sur le Samsung attend la reconnexion ADB et
+  ils ne prennent jamais les données QA comme fixture.
+- `testDebugUnitTest`, `lintDebug`, `compileQaAndroidTestKotlin` et `assembleQa`
+  passent sur le diff courant; `connectedQaAndroidTest` reste à relancer.
   La matrice appareil reste à exécuter.
 - Le relais reste opt-in : sans clé d'idempotence serveur, aucune garantie
   « exactement une fois » n'est revendiquée.

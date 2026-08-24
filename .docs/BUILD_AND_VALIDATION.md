@@ -1,8 +1,9 @@
 # Build et validation Android
 
 > **Type** : guide de développement et état des preuves
-> **Statut** : preuve historique conservée; gate local final de `codex/android-alpha` réussi le 23 août 2026, validation appareil ouverte
-> **Snapshot** : `Chuchote-flow-android@552c4282595922f5a7f1eeb5c6140c4b24f9dfbf`
+> **Statut** : preuve historique conservée; gate local propre final de `codex/android-alpha` réussi le 24 août 2026, validation appareil ouverte
+> **Base auditée** : `main@552c4282595922f5a7f1eeb5c6140c4b24f9dfbf`
+> **Candidate décrite** : tip de `codex/android-alpha`; exécuter `git rev-parse HEAD` pour le SHA courant
 > **Candidate mesurée** : arbre de livraison Android alpha; preuve machine locale acquise, CI distante et validation produit distinctes
 
 ## Clone correct
@@ -13,13 +14,17 @@ Le projet dépend de `whisper.cpp` comme sous-module Git. Utiliser :
 git clone --recurse-submodules https://github.com/ReiiViilo/Chuchote-flow-android.git
 ```
 
+Pour reprendre directement la candidate alpha :
+
+```powershell
+git clone --recurse-submodules --branch codex/android-alpha https://github.com/ReiiViilo/Chuchote-flow-android.git
+```
+
 Pour un clone existant :
 
 ```powershell
 git submodule update --init --recursive
 ```
-
-Le fichier [`CONTRIBUTING.md`](../CONTRIBUTING.md#L7-L17) contient encore l'URL du dépôt Transcribro amont; cette partie est périmée pour le fork.
 
 Dans le clone audité, le sous-module a été initialisé au commit `51c6961c7b64b406833f4b6a4a20e67142f69225`, qui est le gitlink fixé par le dépôt.
 
@@ -32,7 +37,7 @@ Dans le clone audité, le sous-module a été initialisé au commit `51c6961c7b6
 - Gradle Wrapper du dépôt;
 - accès réseau au premier build pour le modèle Whisper si absent.
 
-Références : [`app/build.gradle.kts`](../app/build.gradle.kts#L53-L86), [`lib/build.gradle`](../lib/build.gradle) et [`CONTRIBUTING.md`](../CONTRIBUTING.md#L21-L24).
+Références : [`app/build.gradle.kts`](../app/build.gradle.kts#L53-L86), [`lib/build.gradle`](../lib/build.gradle) et [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
 ## Modèle Whisper
 
@@ -70,7 +75,7 @@ Cette configuration suit la recommandation Android pour le NDK r27 ou
 antérieur; une migration future vers NDK r28+ permettra d'obtenir cet
 alignement par défaut.
 
-La candidate courante a été reconstruite après `clean`. L'inspection avec
+La candidate courante a été reconstruite par le gate documenté ci-dessous. L'inspection avec
 `llvm-readelf -lW` des **11 bibliothèques réellement emballées dans l'APK** a
 mesuré 30 segments `LOAD`, tous à `p_align=0x4000`; aucun segment inférieur à
 16 Kio n'est présent. `zipalign -c -P 16 -v 4` réussit également et les alertes
@@ -105,8 +110,9 @@ L'APK publié utilise la clé debug éphémère du runner. Une mise à jour peut
 
 ## Tests présents dans la candidate actuelle
 
-- 159 scénarios unitaires JUnit ont été exécutés dans 34 suites et 34 fichiers
-  de test, répartis entre `:app` et `:lib`;
+- 182 scénarios unitaires JUnit ont été exécutés dans 38 suites et 38 fichiers
+  de test, répartis entre `:app` et `:lib`; 1 scénario de symlink est ignoré
+  lorsque Windows refuse sa création sans privilège;
 - récupération d'un WAV `.part` et lecture bornée;
 - normalisation, découpage et encodage des segments audio;
 - transcription séquentielle et ordre des textes;
@@ -139,17 +145,31 @@ L'APK publié utilise la clé debug éphémère du runner. Une mise à jour peut
   extras Android standards tolérés, et canal de transcript exclusif sans repli
   après l'échec d'un `PendingIntent`;
 - fenêtre bornée d'apprentissage, différence de corrections et contrat de suppression audio;
-- 1 test instrumenté construit une base SQLite v2 synthétique dans le paquet
-  isolé `.qa`, ouvre `ChuchoteStore` et vérifie la migration v2 → v3, le texte
-  brut, l'état final et la version du schéma; il passe sur le Samsung SM-S721W
-  sous Android 16;
+- 6 tests instrumentés utilisent un contexte de stockage éphémère sous un cache
+  UUID, avec base et racines audio distinctes de celles du paquet QA. Le premier
+  vérifie la migration SQLite v2 → v3; le second vérifie la réhabilitation d'un
+  WAV historique sans modifier le texte, l'état, le chemin ni les octets, puis
+  verrouille l'écriture absolue de `audio_path` pour un rollback v3. Le troisième
+  force l'échec SQLite de la maintenance et exige que l'historique, le
+  dictionnaire et la récupération d'une capture interrompue restent disponibles.
+  Le quatrième place un WAV valide après 100 chemins invalides permanents et
+  prouve, sur trois ouvertures, que le curseur SQLite circulaire avance, revient
+  sous le curseur et ne modifie aucun des diagnostics invalides. Il vérifie aussi
+  par `EXPLAIN QUERY PLAN` les deux pages keyset, l'index partiel et l'absence de
+  tri `TEMP B-TREE`. Le cinquième observe la frontière de lecture dans
+  le contexte de test et verrouille un seul chargement de l'historique quand la
+  maintenance et la récupération ne changent aucune ligne. Le sixième force
+  l'échec de la seconde parmi deux récupérations interrompues : la première
+  mutation reste publiée et `awaitInitializationForTesting()` restitue la cause
+  SQLite exacte. Les six compilent; leur exécution commune sur le Samsung
+  SM-S721W reste à relancer après la nouvelle autorisation ADB;
 - aucun test instrumenté ne simule encore les arbres d'accessibilité de Gmail,
   ChatGPT ou Claude.
 
-La suite actuelle passe intégralement dans le gate local final
-`clean testDebugUnitTest lintDebug assembleQa`. Cette preuve couvre le diff du
-23 août 2026; elle ne remplace pas la validation instrumentée et humaine sur
-appareil.
+La suite actuelle passe intégralement dans le gate local propre final
+`clean testDebugUnitTest lintDebug compileQaAndroidTestKotlin assembleQa --no-daemon --no-build-cache`.
+Cette preuve couvre l'arbre de livraison du 24 août 2026; elle ne remplace pas
+la validation instrumentée et humaine sur appareil.
 
 ## Matrice de validation recommandée
 
@@ -168,7 +188,7 @@ appareil.
 | mise à jour | même clé, clé différente, préservation de `chuchote.db` et préférences |
 | confidentialité | capture réseau et comparaison exacte avec les textes visibles |
 
-## Statut de preuve au 23 août 2026
+## Statut de preuve, revérifié le 24 août 2026
 
 ### Preuve historique de la première candidate QA
 
@@ -189,35 +209,59 @@ appareil.
 - Sources et diff inspectés : oui.
 - `git diff --check` : réussi.
 - Manifeste et trois fichiers XML de configuration : syntaxe XML validée.
-- Tests présents : 159 unitaires exécutés et 1 test instrumenté déclaré.
-- Tests unitaires courants : **réussis**, 159 scénarios dans 34 suites/fichiers,
-  0 échec, 0 erreur et 0 ignoré. Les XML proviennent de
+- Tests présents : 182 unitaires exécutés et 6 tests instrumentés compilés.
+- Tests unitaires courants : **réussis**, 182 scénarios dans 38 suites/fichiers,
+  0 échec, 0 erreur et 1 ignoré. L'unique scénario ignoré tente une sortie par
+  lien symbolique; Windows a refusé de créer le lien faute de privilège. Un
+  scénario obligatoire injecte toutefois la même redirection canonique et
+  prouve sans skip que les syntaxes absolue et typée sont refusées. Les XML proviennent de
   `app/build/test-results/testDebugUnitTest/` et
   `lib/build/test-results/testDebugUnitTest/`.
+- Tests Android du diff courant : **en attente de reconnexion ADB**. Le rapport
+  alpha5 précédent contient 5 scénarios réussis sur le Samsung SM-S721W
+  (Android 16/API 36); il ne couvre pas le sixième scénario ni les deux derniers
+  durcissements statiques.
 - Lint courant : **réussi**, 0 erreur. Les rapports contiennent 54 avertissements
   non bloquants dans `:app` et 3 dans `:lib`, principalement `UseKtx` et versions
   de dépendances; les alertes `Aligned16KB` sont absentes.
 - Alignement natif : **réussi sur la structure de l'APK**, 11 bibliothèques et
   30 segments ELF `LOAD` à `0x4000`, aucun segment inférieur; alignement ZIP
   16 Kio également vérifié. Le test d'exécution sur matériel 16 Kio reste ouvert.
-- APK courant : **construit**, variante `9-qa`, package
+- APK local courant, construit mais **non figé** :
+  `app/build/outputs/apk/qa/app-qa.apk`, variante `9-qa`, package
+  `dev.soupslurpr.transcribro.qa`, 363 100 034 octets, SHA-256
+  `E4134256C1225D9430275B65DC67494F75EF602B5EDBF02509FEABEEDE5E3997`.
+  Il doit être reconstruit après la preuve appareil avant de devenir alpha6.
+- Dernier APK figé historique avant ces deux durcissements : variante `9-qa`, package
   `dev.soupslurpr.transcribro.qa`, libellé « Chuchote Flow QA », minSdk 29,
-  targetSdk 36, ABI arm64-v8a et x86_64, 363 067 266 octets, SHA-256
-  `4B98A1E067EA7BBAAFC9A76C23CC72A9EF60B8D3873190A2A656057BF4184D9F`.
-- Signature APK : vérifiée par `apksigner`; schéma v2, un signataire, certificat
+  targetSdk 36, ABI arm64-v8a et x86_64, 363 270 614 octets, SHA-256
+  `27DB650B213098A46150BD205BE76D7FBF6A2F8934B4607A8EA8777C0F871E2B`.
+- Signature de l'APK courant : vérifiée par `apksigner`; schéma v2, un signataire, certificat
   `C=US, O=Android, CN=Android Debug`, empreinte SHA-256
   `18D7B3ECE0437C8CFC5C64D6BDFA62E847148532BE0A5CFE27B8611B6252577C`.
-- Copie de livraison locale :
-  `C:\Users\Utilisateur\Documents\CODE\artifacts\Chuchote-Flow\9-qa-android-alpha\chuchote-flow-android-9-qa-alpha.apk`,
-  accompagnée de `README.md` et `SHA256SUMS.txt`.
-- CI de la branche : non exécutée dans cette preuve locale; le workflow ne se
-  déclenche sur un push que pour `main`, ou lors d'une pull request vers `main`.
+- Une copie alpha5 peut être conservée hors dépôt comme comparaison locale,
+  mais elle n'est ni portable ni nécessaire à un clone frais.
+- CI distante : la PR brouillon
+  [#14](https://github.com/ReiiViilo/Chuchote-flow-android/pull/14) déclenche le
+  workflow vers `main`. Son état est dynamique : exécuter
+  `gh pr checks 14 --watch` au lieu de recopier ici un résultat susceptible de
+  devenir périmé après le prochain commit.
 - Validation humaine : ouverte.
 
 Il faut donc décrire la candidate actuelle comme **implémentée et validée par le
-gate machine local, mais sans validation produit du dernier diff**. Le prochain
-gate nécessite le téléphone, puis la matrice manuelle :
+gate machine local, mais sans validation instrumentée ni produit du dernier
+diff**. Le prochain gate commence par :
 
 ```powershell
 .\gradlew.bat connectedQaAndroidTest --no-daemon --no-build-cache
 ```
+
+Il est suivi de la matrice manuelle sur téléphone.
+
+> [!CAUTION]
+> Les fixtures de `connectedQaAndroidTest` sont désormais confinées dans un
+> cache UUID, utilisent une base et des racines audio jetables, puis les
+> suppriment en `finally`. Elles ne lisent ni n'écrivent `chuchote.db`. La tâche
+> Gradle installe toutefois le package cible QA et peut le désinstaller à la fin
+> — ce qui a été observé sur le Samsung. Ne pas exécuter cette commande si
+> l'installation ou les données du package QA doivent être conservées.

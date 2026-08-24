@@ -2,7 +2,8 @@
 
 > **Type** : explication technique et limites produit
 > **Statut** : comportement observé et candidate durcie; le mot « apprentissage » est qualifié
-> **Snapshot** : `Chuchote-flow-android@552c4282595922f5a7f1eeb5c6140c4b24f9dfbf`
+> **Base auditée** : `main@552c4282595922f5a7f1eeb5c6140c4b24f9dfbf`
+> **Candidate décrite** : tip de `codex/android-alpha`; vérifier son SHA à la reprise
 
 ## Résumé exact
 
@@ -15,19 +16,19 @@ Deux types d'entrées coexistent :
 | terme ou expression | vide | `entendu` est ajouté au prompt envoyé au relais distant; aucune substitution locale |
 | forme mal reconnue | correction non vide | `remplacer_par` est ajouté au prompt distant et une substitution exacte est appliquée après toute transcription, locale ou distante |
 
-Source : [`ChuchoteStore.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/memory/ChuchoteStore.kt#L15-L38).
+Source : [`ChuchoteStore.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/memory/ChuchoteStore.kt), projection `EntreeDictionnaire` et opérations du dictionnaire.
 
 ## Ajout manuel
 
 L'écran Dictionnaire permet d'ajouter et supprimer des entrées. Le schéma et l'interface n'empêchent pas les doublons ni deux corrections divergentes pour la même forme entendue.
 
-Références : [`DictionaryScreen.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/ui/dictionary/DictionaryScreen.kt#L35-L139) et [`ChuchoteStore.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/memory/ChuchoteStore.kt#L109-L128).
+Références : [`DictionaryScreen.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/ui/dictionary/DictionaryScreen.kt#L35-L139) et [`ChuchoteStore.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/memory/ChuchoteStore.kt), fonction `ajouterEntree`.
 
 ## Substitution après transcription
 
 Pour chaque entrée dont `remplacer_par` n'est pas vide, le store applique une regex Unicode insensible à la casse avec frontières de mot ou de phrase. Il peut préserver une majuscule initiale.
 
-Référence : [`ChuchoteStore.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/memory/ChuchoteStore.kt#L128-L153).
+Référence : [`ChuchoteStore.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/memory/ChuchoteStore.kt), fonction `appliquerCorrections`.
 
 Cette étape se trouve dans le service central après un résultat local comme distant. Elle fonctionne donc avec les deux chemins. Références : [`MainRecognitionService.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/recognitionservice/MainRecognitionService.kt#L347-L359) et [`MainRecognitionService.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/recognitionservice/MainRecognitionService.kt#L422-L433).
 
@@ -40,7 +41,7 @@ Cette étape se trouve dans le service central après un résultat local comme d
 
 ## Biais de reconnaissance
 
-`motsPourBiais()` construit un prompt à partir du dictionnaire, limité à 600 caractères. Il prend `entendu` lorsque le remplacement est vide et `remplacer_par` dans le cas contraire, puis retire les doublons exacts. Référence : [`ChuchoteStore.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/memory/ChuchoteStore.kt#L155-L166).
+`motsPourBiais()` construit un prompt à partir du dictionnaire, limité à 600 caractères. Il prend `entendu` lorsque le remplacement est vide et `remplacer_par` dans le cas contraire, puis retire les doublons exacts. Référence : [`ChuchoteStore.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/memory/ChuchoteStore.kt), fonction `motsPourBiais`.
 
 Ce prompt est utilisé uniquement dans [`RemoteTranscriber.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/remote/RemoteTranscriber.kt#L67-L76). Le JNI Whisper local ne reçoit aucun `initial_prompt`.
 
@@ -95,7 +96,7 @@ Le seul appel observé à l'insertion surveillée vient du widget. Le clavier IM
 
 Le dictionnaire est initialisé vide puis chargé de SQLite de façon asynchrone. Une toute première dictée lancée avant la fin du chargement pourrait ne pas recevoir les corrections ou le prompt attendus. C'est une inférence de code à reproduire avant de la classer comme bug.
 
-Référence : [`ChuchoteStore.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/memory/ChuchoteStore.kt#L54-L64).
+Référence : [`ChuchoteStore.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/memory/ChuchoteStore.kt), bloc d'initialisation et flows du store.
 
 ## Ce qui manque pour le but d'Olivier
 
@@ -113,4 +114,5 @@ Référence : [`ChuchoteStore.kt`](../app/src/main/kotlin/dev/soupslurpr/transcr
 - moyen de désactiver ou annuler une correction apprise;
 - corpus de test représentatif de la manière de parler d'Olivier.
 
-La forme du futur vocabulaire commun reste une décision ouverte dans [OPEN_DECISIONS.md](../../Chuchote-Flow/.docs/OPEN_DECISIONS.md).
+La forme du futur vocabulaire commun reste une décision ouverte dans
+[OPEN_DECISIONS.md](https://github.com/ReiiViilo/Chuchote-Flow/blob/ab0479f136bc3f6fc0d9dffc22ffa08a58fd4552/.docs/OPEN_DECISIONS.md).

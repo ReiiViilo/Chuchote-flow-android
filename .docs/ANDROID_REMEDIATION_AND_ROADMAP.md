@@ -5,16 +5,22 @@
 - **Portée :** application Android Chuchote Flow.
 - **Point de départ audité :** branche `main`, commit `552c4282595922f5a7f1eeb5c6140c4b24f9dfbf`.
 - **Origine des besoins :** retour d'utilisation d'Olivier du 22 août 2026.
-- **Nature :** diagnostic, décisions, critères d'acceptation et état d'implémentation du worktree.
+- **Nature :** diagnostic, décisions, critères d'acceptation et état d'implémentation de la branche alpha.
 - **Preuve sur appareil :** Samsung SM-S721W, Android 16/API 36, application `9-debug`, observé par ADB le 23 août 2026.
-- **État au 23 août :** lots B et une partie du lot C sont implémentés. Le gel
-  courant passe 159 scénarios unitaires dans 34 suites/fichiers, Android Lint et
-  `assembleQa`; un APK `9-qa` signé debug est construit. La migration SQLite
-  avait déjà passé son test instrumenté sur appareil. La validation humaine des
+- **État revérifié au 24 août :** lots B et une partie du lot C sont implémentés. Le gate
+  hors appareil détaillé dans `BUILD_AND_VALIDATION.md` est vert et un APK
+  `9-qa` signé debug est construit. Six scénarios SQLite isolés
+  compilent et attendent leur relance sur appareil : migration v2 → v3,
+  réhabilitation audio sans mutation
+  ni copie, et disponibilité de l'historique/dictionnaire après un échec SQLite
+  forcé de cette maintenance, puis progression persistée au-delà de 100 chemins
+  invalides, et absence de seconde lecture complète lors d'un démarrage sans
+  mutation, plus publication d'une récupération partielle avant restitution de
+  l'erreur SQLite originale. La validation humaine des
   longues dictées, du pont microphone Android 14+, des deux dictées consécutives
   et de Gmail/ChatGPT/Claude reste ouverte.
 
-### Avancement vérifié du worktree
+### Avancement vérifié de la branche alpha
 
 - **Lot A — preuves :** terminé pour les OOM/CME, le délai destructif et le service d'accessibilité non lié; voir `BUGS_HISTORY.md`.
 - **Lot B — zéro perte :** implémenté (WAV progressif récupérable, SQLite v3, états durables, reprise, bouton Réessayer, segments de 30 secondes, pipeline séquentiel).
@@ -62,7 +68,7 @@ Références :
 - [`accessibility_service_config.xml`](../app/src/main/res/xml/accessibility_service_config.xml)
 
 Cette version reçoit des événements de focalisation, mais ne les utilise pas.
-Le worktree de remédiation les traite désormais pour rappeler une instance
+La branche alpha les traite désormais pour rappeler une instance
 existante du widget et élargit la recherche du champ à toutes les fenêtres
 interactives avec un parcours borné.
 
@@ -78,7 +84,7 @@ Après désactivation puis réactivation manuelle du service d'accessibilité :
 - Olivier a confirmé que Chuchote fonctionnait de nouveau.
 
 Ce rétablissement de la version `9-debug` est une récupération opérationnelle,
-pas un correctif de cette version. Le worktree supprime les causes OOM/CME
+pas un correctif de cette version. La branche alpha supprime les causes OOM/CME
 observées et rend l'état « coché mais non lié » explicite; la non-récidive doit
 encore être confirmée pendant les essais QA de longue durée.
 
@@ -105,7 +111,7 @@ Pour chaque tentative d'insertion, le diagnostic doit enregistrer uniquement :
 
 Le contenu du champ et la transcription ne doivent jamais être écrits dans Logcat.
 
-### Correctif implémenté dans le worktree
+### Correctif implémenté dans la branche alpha
 
 La recherche de cible est maintenant progressive :
 
@@ -164,7 +170,7 @@ Le journal de crash Android montre que le délai fixe n'est pas le seul mécanis
 - des `ConcurrentModificationException` ont été levées pendant l'itération de listes audio ou de `transcribeJobs` modifiées par d'autres coroutines;
 - le crash le plus récent observé date du 22 août 2026 à 22:22:46 et se produit dans le parcours de fin/jointure de `onStartListening`.
 
-Dans la version `9-debug` auditée, le code lançait une coroutine VAD pour chaque tampon lu, tout en partageant sans sérialisation `transcriptions`, `transcriptionIndex`, les listes audio et `transcribeJobs`. Les tâches de transcription itéraient également `transcribeJobs` pendant que d'autres tâches y ajoutaient des éléments. Les traces de l'appareil ont transformé les risques de mémoire et de concurrence relevés statiquement en causes racines reproduites; le worktree les remplace par un pipeline séquentiel et borné.
+Dans la version `9-debug` auditée, le code lançait une coroutine VAD pour chaque tampon lu, tout en partageant sans sérialisation `transcriptions`, `transcriptionIndex`, les listes audio et `transcribeJobs`. Les tâches de transcription itéraient également `transcribeJobs` pendant que d'autres tâches y ajoutaient des éléments. Les traces de l'appareil ont transformé les risques de mémoire et de concurrence relevés statiquement en causes racines reproduites; la branche alpha les remplace par un pipeline séquentiel et borné.
 
 Références :
 
@@ -267,7 +273,7 @@ Tant qu'une décision produit explicite n'est pas prise, la valeur sûre est :
 - Dans `9-debug`, l'événement `TYPE_VIEW_FOCUSED` est configuré mais ignoré,
   l'orbe est démarrée manuellement ou réveillée par secousse et sa position
   n'est pas persistée.
-- Dans le worktree, le focus d'un champ compatible rappelle automatiquement
+- Dans la branche alpha, le focus d'un champ compatible rappelle automatiquement
   une instance de widget déjà démarrée et la dernière position est persistée.
 - Si aucune instance du widget n'existe, le service d'accessibilité affiche à
   la dernière position un petit lanceur sans microphone. Un tap explicite crée
