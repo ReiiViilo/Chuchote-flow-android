@@ -31,6 +31,20 @@ internal data class WavInfo(
     val dataSizeBytes: Long,
 )
 
+private val MAX_CANONICAL_WAV_DATA_SIZE =
+    (UInt.MAX_VALUE.toLong() - 36L) and -2L
+
+/** Garantit que `36 + dataSize` reste représentable dans l'en-tête RIFF. */
+internal fun requireCanonicalWavDataSize(dataSize: Long): Long {
+    require(dataSize >= 0L && dataSize % 2L == 0L) {
+        "Le payload PCM doit être positif et aligné sur 16 bits"
+    }
+    require(dataSize <= MAX_CANONICAL_WAV_DATA_SIZE) {
+        "Le payload WAV dépasse la capacité RIFF 32 bits"
+    }
+    return dataSize
+}
+
 /**
  * WAV écrit progressivement dans `<nom>.wav.part`.
  *
@@ -131,17 +145,48 @@ internal class RecoverableWavFile private constructor(
 
         fun inspect(file: File): WavInfo {
             RandomAccessFile(file, "r").use { randomAccess ->
-                require(randomAccess.length() >= HEADER_SIZE) { "Fichier WAV trop court" }
+                val fileSize = randomAccess.length()
+                require(fileSize >= HEADER_SIZE) { "Fichier WAV trop court" }
+                require(fileSize - 8 <= UInt.MAX_VALUE.toLong()) { "WAV supérieur à 4 Gio" }
                 require(readAscii(randomAccess, 0, 4) == "RIFF") { "Signature RIFF absente" }
                 require(readAscii(randomAccess, 8, 4) == "WAVE") { "Signature WAVE absente" }
-                require(readLittleEndianShort(randomAccess, 22) == 1) { "Le WAV doit être mono" }
-                require(readLittleEndianShort(randomAccess, 34) == 16) { "Le WAV doit être PCM 16 bits" }
+                require(readAscii(randomAccess, 12, 4) == "fmt ") { "Chunk fmt absent" }
+                require(readUnsignedLittleEndianInt(randomAccess, 16) == 16L) {
+                    "Le chunk fmt PCM canonique doit mesurer 16 octets"
+                }
+                require(readLittleEndianShort(randomAccess, 20) == 1) {
+                    "Le WAV doit utiliser le format PCM entier"
+                }
+
+                val channels = readLittleEndianShort(randomAccess, 22)
+                require(channels == 1) { "Le WAV doit être mono" }
 
                 val sampleRate = readLittleEndianInt(randomAccess, 24)
                 require(sampleRate > 0) { "Le WAV doit avoir une fréquence positive" }
-                val actualDataSize = (randomAccess.length() - HEADER_SIZE)
-                    .coerceAtLeast(0)
-                    .let { it - (it % BYTES_PER_SAMPLE) }
+                require(
+                    readUnsignedLittleEndianInt(randomAccess, 28) ==
+                            sampleRate.toLong() * BYTES_PER_SAMPLE,
+                ) { "Débit PCM incohérent" }
+                require(readLittleEndianShort(randomAccess, 32).toLong() == BYTES_PER_SAMPLE) {
+                    "Alignement PCM incohérent"
+                }
+                require(readLittleEndianShort(randomAccess, 34) == 16) {
+                    "Le WAV doit être PCM 16 bits"
+                }
+                require(readAscii(randomAccess, 36, 4) == "data") { "Chunk data absent" }
+
+                val actualDataSize = fileSize - HEADER_SIZE
+                require(actualDataSize % BYTES_PER_SAMPLE == 0L) {
+                    "Le payload PCM 16 bits doit contenir des échantillons complets"
+                }
+                val declaredDataSize = readUnsignedLittleEndianInt(randomAccess, 40)
+                require(declaredDataSize == actualDataSize) {
+                    "Taille data incohérente"
+                }
+                val declaredRiffSize = readUnsignedLittleEndianInt(randomAccess, 4)
+                require(declaredRiffSize == fileSize - 8) {
+                    "Taille RIFF incohérente"
+                }
                 return WavInfo(
                     sampleRate = sampleRate,
                     totalSamples = actualDataSize / BYTES_PER_SAMPLE,
@@ -182,7 +227,7 @@ internal class RecoverableWavFile private constructor(
             val actualDataSize = (file.length() - HEADER_SIZE)
                 .coerceAtLeast(0)
                 .let { it - (it % BYTES_PER_SAMPLE) }
-            require(actualDataSize <= UInt.MAX_VALUE.toLong()) { "WAV supérieur à 4 Gio" }
+            requireCanonicalWavDataSize(actualDataSize)
             file.setLength(HEADER_SIZE + actualDataSize)
             writeHeader(file, sampleRate, actualDataSize)
             file.seek(HEADER_SIZE + actualDataSize)
@@ -226,6 +271,9 @@ internal class RecoverableWavFile private constructor(
             if (b3 < 0) throw EOFException()
             return b0 or (b1 shl 8) or (b2 shl 16) or (b3 shl 24)
         }
+
+        private fun readUnsignedLittleEndianInt(file: RandomAccessFile, offset: Long): Long =
+            readLittleEndianInt(file, offset).toLong() and UInt.MAX_VALUE.toLong()
 
         private fun readLittleEndianShort(file: RandomAccessFile, offset: Long): Int {
             file.seek(offset)

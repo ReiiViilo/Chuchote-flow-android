@@ -8,18 +8,26 @@ import android.database.sqlite.SQLiteOpenHelper
 import android.util.Log
 import dev.soupslurpr.transcribro.recognitionservice.audio.AudioSegment
 import dev.soupslurpr.transcribro.recognitionservice.audio.AudioSegmentCodec
+import dev.soupslurpr.transcribro.recognitionservice.audio.HistoricalAudioRehabilitation
+import dev.soupslurpr.transcribro.recognitionservice.audio.PrivateAudioPathResolver
 import dev.soupslurpr.transcribro.recognitionservice.audio.RecoverableWavFile
 import dev.soupslurpr.transcribro.recognitionservice.audio.TranscriptionSessionGate
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.coroutines.EmptyCoroutineContext
 
 /**
  * Une mutation durable ne redevient jamais un échec logique parce que la
@@ -73,6 +81,28 @@ internal object StoreAudioResolution {
         block()
     } catch (_: Exception) {
         null
+    }
+}
+
+/**
+ * La remise en état d'anciens diagnostics est une optimisation de compatibilité,
+ * jamais un prérequis au chargement normal des données. Seules les erreurs
+ * ordinaires sont absorbées; les défaillances de la machine virtuelle remontent.
+ */
+internal object StoreStartupBoundary {
+    fun runBestEffort(
+        step: () -> Unit,
+        onFailure: (Throwable) -> Unit = {},
+    ) {
+        try {
+            step()
+        } catch (error: Exception) {
+            try {
+                onFailure(error)
+            } catch (_: Exception) {
+                // Un diagnostic secondaire ne doit pas bloquer le démarrage.
+            }
+        }
     }
 }
 
@@ -140,19 +170,34 @@ data class EntreeDictionnaire(
  * suit tout le cycle de vie. Une mort de processus ne transforme donc plus
  * une longue dictée en donnée invisible.
  */
-class ChuchoteStore private constructor(context: Context) {
+class ChuchoteStore private constructor(
+    context: Context,
+    databaseName: String,
+    private val isolatedTestStore: Boolean,
+    private val onHistoryProjectionReadForTesting: (() -> Unit)?,
+) {
 
-    private val applicationContext = context.applicationContext
-    private val db = Db(applicationContext)
-    private val audioRoot = File(
-        applicationContext.noBackupFilesDir,
-        AUDIO_DIRECTORY,
-    ).canonicalFile
+    private val db = Db(context, databaseName)
+    private val audioPaths = PrivateAudioPathResolver(
+        noBackupFilesDir = context.noBackupFilesDir,
+        filesDir = context.filesDir,
+    )
+    private val audioRoot = audioPaths.preferredDirectory
     private val storeStartedAtMs = System.currentTimeMillis()
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private val dbDispatcher = Dispatchers.IO.limitedParallelism(1)
-    private val scope = CoroutineScope(SupervisorJob() + dbDispatcher)
+    private val storeJob = SupervisorJob()
+    private val isolatedTestExceptionHandler = if (isolatedTestStore) {
+        CoroutineExceptionHandler { _, error ->
+            Log.e(STORE_TAG, "Échec du store isolé capturé par le test", error)
+        }
+    } else {
+        EmptyCoroutineContext
+    }
+    private val scope = CoroutineScope(storeJob + dbDispatcher + isolatedTestExceptionHandler)
+    private val initializationResult = CompletableDeferred<Unit>()
+    private val initializationJob: Job
 
     private val _dictees = MutableStateFlow<List<Dictee>>(emptyList())
     val dictees: StateFlow<List<Dictee>> = _dictees.asStateFlow()
@@ -162,10 +207,42 @@ class ChuchoteStore private constructor(context: Context) {
 
     init {
         audioRoot.mkdirs()
-        scope.launch {
-            recupererDicteesInterrompues()
+        initializationJob = scope.launch {
+            // Publier les données existantes avant toute maintenance historique.
             rechargerDictees()
             rechargerDictionnaire()
+            var didMutateHistory = false
+            val markHistoryMutation = { didMutateHistory = true }
+            StoreStartupBoundary.runBestEffort(
+                step = { rehabiliterAudiosHistoriques(markHistoryMutation) },
+                onFailure = ::journaliserEchecRehabilitation,
+            )
+            var recoveryFailure: Exception? = null
+            try {
+                recupererDicteesInterrompues(markHistoryMutation)
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                recoveryFailure = error
+            }
+            if (didMutateHistory) {
+                try {
+                    rechargerDictees()
+                } catch (refreshFailure: Exception) {
+                    val originalFailure = recoveryFailure
+                    if (originalFailure == null) {
+                        throw refreshFailure
+                    }
+                    originalFailure.addSuppressed(refreshFailure)
+                }
+            }
+            recoveryFailure?.let { throw it }
+        }
+        initializationJob.invokeOnCompletion { cause ->
+            if (cause == null) {
+                initializationResult.complete(Unit)
+            } else {
+                initializationResult.completeExceptionally(cause)
+            }
         }
     }
 
@@ -181,6 +258,10 @@ class ChuchoteStore private constructor(context: Context) {
                 db.writableDatabase.insertOrThrow("dictees", null, ContentValues().apply {
                     put("texte", "")
                     put("cree_le", System.currentTimeMillis())
+                    // Conserver le contrat absolu de la base v3 : l'APK de
+                    // rollback sait le relire. Le résolveur accepte déjà les
+                    // références relatives pour une future migration dédiée,
+                    // mais ce patch de compatibilité n'en écrit aucune.
                     put("audio_path", audio.path)
                     put("etat", EtatDictee.ENREGISTREMENT.valeurStockee)
                 })
@@ -436,6 +517,7 @@ class ChuchoteStore private constructor(context: Context) {
     // ------------------------------------------------------------------
 
     private fun rechargerDictees() {
+        onHistoryProjectionReadForTesting?.invoke()
         val liste = mutableListOf<Dictee>()
         db.readableDatabase.rawQuery(
             "SELECT $DICTEE_COLUMNS FROM dictees ORDER BY id DESC",
@@ -457,6 +539,14 @@ class ChuchoteStore private constructor(context: Context) {
         Log.w(
             STORE_TAG,
             "Mutation SQLite confirmée; actualisation de l'historique différée",
+            error,
+        )
+    }
+
+    private fun journaliserEchecRehabilitation(error: Throwable) {
+        Log.w(
+            STORE_TAG,
+            "Réhabilitation audio historique ignorée; chargement normal poursuivi",
             error,
         )
     }
@@ -494,7 +584,7 @@ class ChuchoteStore private constructor(context: Context) {
     }
 
     /** Les enregistrements interrompus deviennent visibles et relançables. */
-    private fun recupererDicteesInterrompues() {
+    private fun recupererDicteesInterrompues(onHistoryMutation: () -> Unit) {
         val pendingStates = listOf(
             EtatDictee.ENREGISTREMENT,
             EtatDictee.EN_ATTENTE,
@@ -503,7 +593,8 @@ class ChuchoteStore private constructor(context: Context) {
 
         val pending = mutableListOf<Pair<Long, String?>>()
         db.readableDatabase.rawQuery(
-            "SELECT id, audio_path FROM dictees WHERE etat IN ($pendingStates) AND cree_le < ?",
+            "SELECT id, audio_path FROM dictees " +
+                    "WHERE etat IN ($pendingStates) AND cree_le < ? ORDER BY id ASC",
             arrayOf(storeStartedAtMs.toString()),
         ).use { cursor ->
             while (cursor.moveToNext()) {
@@ -520,30 +611,143 @@ class ChuchoteStore private constructor(context: Context) {
                 StoreAudioResolution.resolve { RecoverableWavFile.inspect(it) }
             }
             val hasAudio = info != null && info.totalSamples > 0
-            db.writableDatabase.update("dictees", ContentValues().apply {
+            val rowsChanged = db.writableDatabase.update("dictees", ContentValues().apply {
                 put("etat", EtatDictee.A_REESSAYER.valeurStockee)
                 put("error_code", if (hasAudio) "process_interrupted" else "audio_missing")
                 info?.let {
                     put("audio_duration_ms", it.totalSamples * 1000L / it.sampleRate)
                 }
             }, "id = ?", arrayOf(id.toString()))
+            if (rowsChanged > 0) onHistoryMutation()
         }
+    }
+
+    /**
+     * Répare les faux diagnostics créés quand seule la nouvelle racine audio
+     * était reconnue. Le transcript, l'état et le chemin existants ne sont
+     * jamais réécrits; le WAV historique est seulement inspecté en lecture.
+     */
+    private fun rehabiliterAudiosHistoriques(onHistoryMutation: () -> Unit) {
+        val database = db.writableDatabase
+        database.execSQL(
+            "CREATE TABLE IF NOT EXISTS $MAINTENANCE_STATE_TABLE (" +
+                    "name TEXT PRIMARY KEY, " +
+                    "cursor_id INTEGER NOT NULL)",
+        )
+        database.execSQL(
+            "CREATE INDEX IF NOT EXISTS $HISTORICAL_AUDIO_INDEX " +
+                    "ON dictees(id) " +
+                    "WHERE audio_path IS NOT NULL " +
+                    "AND error_code IN ('$AUDIO_MISSING_ERROR', " +
+                    "'$RETRY_AUDIO_MISSING_ERROR')",
+        )
+        val previousCursorId = database.rawQuery(
+            "SELECT cursor_id FROM $MAINTENANCE_STATE_TABLE WHERE name = ?",
+            arrayOf(HISTORICAL_AUDIO_CURSOR_KEY),
+        ).use { cursor ->
+            if (cursor.moveToFirst()) cursor.getLong(0) else 0L
+        }
+        val candidates = lireCandidatsRehabilitation(
+            database = database,
+            cursorId = previousCursorId,
+            afterCursor = true,
+            limit = MAX_HISTORICAL_REHABILITATIONS_PER_STARTUP,
+        ).toMutableList()
+        val remaining = MAX_HISTORICAL_REHABILITATIONS_PER_STARTUP - candidates.size
+        if (remaining > 0) {
+            candidates += lireCandidatsRehabilitation(
+                database = database,
+                cursorId = previousCursorId,
+                afterCursor = false,
+                limit = remaining,
+            )
+        }
+        if (candidates.isEmpty()) return
+
+        // Le curseur est avancé avant les inspections et les mises à jour. Un
+        // crash ou une erreur SQLite après ce point peut différer ce lot, mais
+        // ne peut pas affamer indéfiniment les IDs suivants; le tri circulaire
+        // le revisitera au prochain tour complet.
+        val cursorWrite = database.insertWithOnConflict(
+            MAINTENANCE_STATE_TABLE,
+            null,
+            ContentValues().apply {
+                put("name", HISTORICAL_AUDIO_CURSOR_KEY)
+                put("cursor_id", candidates.last().first)
+            },
+            SQLiteDatabase.CONFLICT_REPLACE,
+        )
+        check(cursorWrite != -1L) { "Impossible d'avancer le curseur de réhabilitation" }
+
+        candidates.forEach { (id, path, errorCode) ->
+            // Une erreur SQLite systémique abandonne la passe bornée. Les
+            // erreurs ordinaires de chemin/WAV sont déjà converties en `null`
+            // par l'évaluateur et laissent les autres candidats progresser.
+            val changed = rehabiliterAudioHistorique(
+                id = id,
+                path = path,
+                errorCode = errorCode,
+            )
+            if (changed) onHistoryMutation()
+        }
+    }
+
+    private fun lireCandidatsRehabilitation(
+        database: SQLiteDatabase,
+        cursorId: Long,
+        afterCursor: Boolean,
+        limit: Int,
+    ): List<Triple<Long, String?, String?>> {
+        if (limit <= 0) return emptyList()
+        val comparison = if (afterCursor) ">" else "<="
+        val candidates = mutableListOf<Triple<Long, String?, String?>>()
+        database.rawQuery(
+            "SELECT id, audio_path, error_code FROM dictees " +
+                    "INDEXED BY $HISTORICAL_AUDIO_INDEX " +
+                    "WHERE audio_path IS NOT NULL " +
+                    "AND error_code IN ('$AUDIO_MISSING_ERROR', " +
+                    "'$RETRY_AUDIO_MISSING_ERROR') " +
+                    "AND id $comparison ? ORDER BY id ASC LIMIT ?",
+            arrayOf(cursorId.toString(), limit.toString()),
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                candidates += Triple(
+                    cursor.getLong(0),
+                    cursor.stringOrNull(1),
+                    cursor.stringOrNull(2),
+                )
+            }
+        }
+        return candidates
+    }
+
+    private fun rehabiliterAudioHistorique(
+        id: Long,
+        path: String?,
+        errorCode: String?,
+    ): Boolean {
+        val repair = HistoricalAudioRehabilitation.evaluate(
+            errorCode = errorCode,
+            persistedPath = path,
+            resolver = audioPaths,
+        ) ?: return false
+        return db.writableDatabase.update(
+            "dictees",
+            ContentValues().apply {
+                putNull("error_code")
+                put("audio_duration_ms", repair.durationMs)
+            },
+            "id = ? AND error_code = ?",
+            arrayOf(id.toString(), errorCode),
+        ) > 0
     }
 
     private fun exigerFichierAudioPrive(file: File): File {
-        val canonical = file.canonicalFile
-        require(canonical.path.startsWith(audioRoot.path + File.separator)) {
-            "Le fichier audio doit rester dans le stockage privé de Chuchote Flow"
-        }
-        require(canonical.extension.equals("wav", ignoreCase = true)) {
-            "Le fichier audio doit être un WAV"
-        }
-        return canonical
+        return audioPaths.requirePrivateWav(file)
     }
 
     private fun fichierAudioPriveOuNull(path: String?): File? {
-        if (path.isNullOrBlank()) return null
-        return StoreAudioResolution.resolve { exigerFichierAudioPrive(File(path)) }
+        return audioPaths.resolve(path)
     }
 
     private fun supprimerDicteeApresAudio(id: Long, path: String?) {
@@ -573,9 +777,27 @@ class ChuchoteStore private constructor(context: Context) {
         !finalFile.exists() && !File("${finalFile.path}.part").exists()
     }.getOrDefault(false)
 
-    private class Db(context: Context) : SQLiteOpenHelper(
+    internal suspend fun awaitInitializationForTesting() {
+        require(isolatedTestStore) {
+            "Seul un store explicitement isolé expose son signal d'initialisation"
+        }
+        initializationResult.await()
+    }
+
+    internal suspend fun closeIsolatedForTesting() {
+        require(isolatedTestStore) {
+            "Seul un store explicitement isolé peut être fermé par ce helper"
+        }
+        storeJob.cancelAndJoin()
+        db.close()
+    }
+
+    private class Db(
+        context: Context,
+        databaseName: String,
+    ) : SQLiteOpenHelper(
         context,
-        DATABASE_NAME,
+        databaseName,
         null,
         DATABASE_VERSION,
     ) {
@@ -640,7 +862,12 @@ class ChuchoteStore private constructor(context: Context) {
     companion object {
         private const val DATABASE_NAME = "chuchote.db"
         private const val DATABASE_VERSION = 3
-        private const val AUDIO_DIRECTORY = "dictations"
+        private const val AUDIO_MISSING_ERROR = "audio_missing"
+        private const val RETRY_AUDIO_MISSING_ERROR = "retry_audio_missing"
+        private const val MAX_HISTORICAL_REHABILITATIONS_PER_STARTUP = 100
+        private const val MAINTENANCE_STATE_TABLE = "maintenance_state"
+        private const val HISTORICAL_AUDIO_CURSOR_KEY = "historical_audio_rehabilitation_v1"
+        private const val HISTORICAL_AUDIO_INDEX = "idx_dictees_historical_audio_errors"
         private const val MAX_ERROR_CODE_LENGTH = 120
         private const val MAX_BIAIS_CARACTERES = 600
         private const val STORE_TAG = "ChuchoteStore"
@@ -657,8 +884,40 @@ class ChuchoteStore private constructor(context: Context) {
 
         fun get(context: Context): ChuchoteStore =
             instance ?: synchronized(this) {
-                instance ?: ChuchoteStore(context.applicationContext).also { instance = it }
+                instance ?: ChuchoteStore(
+                    context = context.applicationContext,
+                    databaseName = DATABASE_NAME,
+                    isolatedTestStore = false,
+                    onHistoryProjectionReadForTesting = null,
+                ).also { instance = it }
             }
+
+        internal fun openIsolatedForTesting(
+            context: Context,
+            databaseName: String,
+            onHistoryProjectionRead: (() -> Unit)? = null,
+        ): ChuchoteStore {
+            require(TEST_DATABASE_NAME.matches(databaseName)) {
+                "Nom de base de test non autorisé"
+            }
+            val cacheRoot = context.cacheDir.canonicalFile.toPath()
+            val isolatedPaths = listOf(
+                context.getDatabasePath(databaseName),
+                context.filesDir,
+                context.noBackupFilesDir,
+            ).map { it.canonicalFile.toPath() }
+            require(isolatedPaths.all { path -> path != cacheRoot && path.startsWith(cacheRoot) }) {
+                "La base et les racines audio de test doivent rester dans un cache jetable"
+            }
+            return ChuchoteStore(
+                context = context,
+                databaseName = databaseName,
+                isolatedTestStore = true,
+                onHistoryProjectionReadForTesting = onHistoryProjectionRead,
+            )
+        }
+
+        private val TEST_DATABASE_NAME = Regex("test-chuchote-[a-z0-9-]+\\.db")
     }
 }
 

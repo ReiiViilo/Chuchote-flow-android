@@ -129,6 +129,90 @@ class RecoverableWavFileTest {
     }
 
     @Test
+    fun `inspect rejette tout format autre que pcm entier`() {
+        val finalFile = validWav("format-non-pcm.wav")
+        writeLittleEndianShort(finalFile, offset = 20, value = 3)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            RecoverableWavFile.inspect(finalFile)
+        }
+    }
+
+    @Test
+    fun `inspect exige les chunks fmt et data canoniques`() {
+        val invalidFmt = validWav("chunk-fmt.wav")
+        writeAscii(invalidFmt, offset = 12, value = "JUNK")
+        val invalidFmtSize = validWav("taille-fmt.wav")
+        writeLittleEndianInt(invalidFmtSize, offset = 16, value = 18)
+        val invalidData = validWav("chunk-data.wav")
+        writeAscii(invalidData, offset = 36, value = "JUNK")
+
+        listOf(invalidFmt, invalidFmtSize, invalidData).forEach { file ->
+            assertThrows(file.name, IllegalArgumentException::class.java) {
+                RecoverableWavFile.inspect(file)
+            }
+        }
+    }
+
+    @Test
+    fun `inspect exige un alignement et un debit pcm coherents`() {
+        val invalidAlignment = validWav("alignement.wav")
+        writeLittleEndianShort(invalidAlignment, offset = 32, value = 4)
+        val invalidByteRate = validWav("debit.wav")
+        writeLittleEndianInt(invalidByteRate, offset = 28, value = 123)
+
+        listOf(invalidAlignment, invalidByteRate).forEach { file ->
+            assertThrows(file.name, IllegalArgumentException::class.java) {
+                RecoverableWavFile.inspect(file)
+            }
+        }
+    }
+
+    @Test
+    fun `inspect exige des tailles riff et data egales aux octets reels`() {
+        val invalidRiffSize = validWav("taille-riff.wav")
+        writeLittleEndianInt(invalidRiffSize, offset = 4, value = 36)
+        val invalidDataSize = validWav("taille-data.wav")
+        writeLittleEndianInt(invalidDataSize, offset = 40, value = 0)
+        val trailingByte = validWav("octet-orphelin.wav").apply {
+            appendBytes(byteArrayOf(7))
+        }
+
+        listOf(invalidRiffSize, invalidDataSize, trailingByte).forEach { file ->
+            assertThrows(file.name, IllegalArgumentException::class.java) {
+                RecoverableWavFile.inspect(file)
+            }
+        }
+    }
+
+    @Test
+    fun `inspect accepte le wav pcm canonique vide`() {
+        val finalFile = validWav("vide.wav", samples = shortArrayOf())
+
+        val info = RecoverableWavFile.inspect(finalFile)
+
+        assertEquals(0L, info.totalSamples)
+        assertEquals(0L, info.dataSizeBytes)
+    }
+
+    @Test
+    fun `la limite du payload garantit que la taille riff tient sur 32 bits`() {
+        val largestEvenPayload = (UInt.MAX_VALUE.toLong() - 36L) and -2L
+
+        assertEquals(0L, requireCanonicalWavDataSize(0L))
+        assertEquals(largestEvenPayload, requireCanonicalWavDataSize(largestEvenPayload))
+        assertThrows(IllegalArgumentException::class.java) {
+            requireCanonicalWavDataSize(largestEvenPayload + 2L)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            requireCanonicalWavDataSize(-2L)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            requireCanonicalWavDataSize(3L)
+        }
+    }
+
+    @Test
     fun `une initialisation wav qui echoue ferme le handle et preserve la cause`() {
         var closed = false
         val initializationFailure = IOException("header")
@@ -146,5 +230,41 @@ class RecoverableWavFileTest {
         assertTrue(closed)
         assertSame(initializationFailure, thrown)
         assertEquals("close", thrown.suppressed.single().message)
+    }
+
+    private fun validWav(
+        name: String,
+        samples: ShortArray = shortArrayOf(1, 2, 3, 4),
+    ): File {
+        val finalFile = File(temporaryFolder.root, name)
+        RecoverableWavFile.create(finalFile, sampleRate = 16_000).use { writer ->
+            writer.append(samples)
+            writer.finalizeRecording()
+        }
+        return finalFile
+    }
+
+    private fun writeAscii(file: File, offset: Long, value: String) {
+        RandomAccessFile(file, "rw").use { randomAccess ->
+            randomAccess.seek(offset)
+            randomAccess.write(value.toByteArray(Charsets.US_ASCII))
+        }
+    }
+
+    private fun writeLittleEndianInt(file: File, offset: Long, value: Long) {
+        RandomAccessFile(file, "rw").use { randomAccess ->
+            randomAccess.seek(offset)
+            repeat(4) { byteIndex ->
+                randomAccess.write(((value ushr (byteIndex * 8)) and 0xFF).toInt())
+            }
+        }
+    }
+
+    private fun writeLittleEndianShort(file: File, offset: Long, value: Int) {
+        RandomAccessFile(file, "rw").use { randomAccess ->
+            randomAccess.seek(offset)
+            randomAccess.write(value and 0xFF)
+            randomAccess.write((value ushr 8) and 0xFF)
+        }
     }
 }

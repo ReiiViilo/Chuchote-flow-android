@@ -9,14 +9,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.Rule
 import org.junit.rules.TemporaryFolder
 import java.io.File
-import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 
 class RetryWorkflowGateTest {
@@ -153,20 +151,6 @@ class RetryWorkflowGateTest {
 
         assertTrue(recoveryAttempted)
         assertTrue(persistenceFailureReported)
-    }
-
-    @Test
-    fun `la resolution du chemin masque les erreurs de chemin mais jamais un OOM`() {
-        assertNull(
-            RetryAudioPathResolution.resolve<String> {
-                throw IOException("chemin invalide")
-            },
-        )
-        assertThrows(OutOfMemoryError::class.java) {
-            RetryAudioPathResolution.resolve<String> {
-                throw OutOfMemoryError("memoire")
-            }
-        }
     }
 
     @Test

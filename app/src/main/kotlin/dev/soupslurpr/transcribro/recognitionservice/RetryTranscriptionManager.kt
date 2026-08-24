@@ -7,6 +7,7 @@ import dev.soupslurpr.transcribro.memory.EtatDictee
 import dev.soupslurpr.transcribro.preferences.PrivacyConsent
 import dev.soupslurpr.transcribro.recognitionservice.audio.AudioSegmentPlanner
 import dev.soupslurpr.transcribro.recognitionservice.audio.AudioSegmentSource
+import dev.soupslurpr.transcribro.recognitionservice.audio.PrivateAudioPathResolver
 import dev.soupslurpr.transcribro.recognitionservice.audio.RecoverableWavFile
 import dev.soupslurpr.transcribro.recognitionservice.audio.SegmentText
 import dev.soupslurpr.transcribro.recognitionservice.audio.SegmentTranscriber
@@ -100,15 +101,6 @@ internal object RecoveryFailureBoundary {
     }
 }
 
-/** Les erreurs ordinaires invalident un chemin; un OOM doit rester récupérable. */
-internal object RetryAudioPathResolution {
-    fun <T> resolve(block: () -> T): T? = try {
-        block()
-    } catch (_: Exception) {
-        null
-    }
-}
-
 internal sealed interface RetryAudioRecoveryResult {
     data class Ready(val file: File, val info: WavInfo) : RetryAudioRecoveryResult
     data object Missing : RetryAudioRecoveryResult
@@ -159,7 +151,10 @@ internal object RetryFailurePersistencePolicy {
 internal class RetryTranscriptionManager private constructor(context: Context) {
     private val applicationContext = context.applicationContext
     private val store = ChuchoteStore.get(applicationContext)
-    private val audioRoot = File(applicationContext.noBackupFilesDir, AUDIO_DIRECTORY).canonicalFile
+    private val audioPaths = PrivateAudioPathResolver(
+        noBackupFilesDir = applicationContext.noBackupFilesDir,
+        filesDir = applicationContext.filesDir,
+    )
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private val scope = CoroutineScope(
@@ -374,11 +369,7 @@ internal class RetryTranscriptionManager private constructor(context: Context) {
     }
 
     private fun privateAudioOrNull(path: String?): File? {
-        if (path.isNullOrBlank()) return null
-        return RetryAudioPathResolution.resolve { File(path).canonicalFile }?.takeIf {
-            it.path.startsWith(audioRoot.path + File.separator) &&
-                    it.extension.equals("wav", ignoreCase = true)
-        }
+        return audioPaths.resolve(path)
     }
 
     private fun logPersistenceFailure() {
@@ -387,7 +378,6 @@ internal class RetryTranscriptionManager private constructor(context: Context) {
 
     companion object {
         private const val TAG = "RetryTranscription"
-        private const val AUDIO_DIRECTORY = "dictations"
         private const val SAMPLE_RATE = 16_000
         private const val MAX_SEGMENT_SAMPLES = 480_000
 
