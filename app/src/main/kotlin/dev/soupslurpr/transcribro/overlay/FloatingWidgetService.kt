@@ -984,13 +984,14 @@ class FloatingWidgetService : Service() {
 
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         val clip = sensitivePlainText("Chuchote Flow", text)
+        // `setPrimaryClip` sans exception suffit comme preuve : Android peut
+        // refuser la relecture du presse-papiers à une app hors focus alors
+        // que l'écriture, elle, a bien eu lieu. Exiger la relecture faisait
+        // annoncer « Insertion impossible » avec le texte pourtant copié.
         val copied = clipboard?.let {
             runCatching {
                 it.setPrimaryClip(clip)
-                val observed = it.primaryClip
-                observed != null &&
-                    observed.itemCount > 0 &&
-                    observed.getItemAt(0).text?.toString() == text
+                true
             }.getOrDefault(false)
         } == true
         if (!copied) {

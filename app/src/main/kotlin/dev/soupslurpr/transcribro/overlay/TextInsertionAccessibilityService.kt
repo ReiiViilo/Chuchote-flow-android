@@ -423,17 +423,41 @@ class TextInsertionAccessibilityService : AccessibilityService() {
             return TextInsertionResult.UNSAFE_FIELD_STATE
         }
 
-        val existing = runCatching { focused.text }.getOrNull()
+        // Les champs web et React Native (Gmail dans Chrome, ChatGPT, Claude)
+        // exposent souvent un placeholder à la place d'un texte vide, ou une
+        // sélection absente (-1). Interpréter ces états ici évite de refuser
+        // une insertion parfaitement sûre dans un champ vide.
+        val fieldState = runCatching {
+            EditableFieldState.read(
+                rawText = focused.text,
+                showingHint = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                    focused.isShowingHintText,
+                selectionStart = focused.textSelectionStart,
+                selectionEnd = focused.textSelectionEnd,
+            )
+        }.getOrNull()
+        if (fieldState == null) {
+            logInsertionRefusal(focused, "field_state_unreadable")
+            return TextInsertionResult.UNSAFE_FIELD_STATE
+        }
+        val existing = fieldState.existing
         val composition = runCatching {
             TextInsertionComposer.compose(
                 existing = existing,
-                selectionStart = focused.textSelectionStart,
-                selectionEnd = focused.textSelectionEnd,
+                selectionStart = fieldState.selectionStart,
+                selectionEnd = fieldState.selectionEnd,
                 inserted = text,
             )
-        }.getOrNull() ?: return TextInsertionResult.UNSAFE_FIELD_STATE
+        }.getOrNull()
+        if (composition == null) {
+            logInsertionRefusal(focused, "compose_refused")
+            return TextInsertionResult.UNSAFE_FIELD_STATE
+        }
         val actionText = composeActionText(existing, composition)
-            ?: return TextInsertionResult.UNSAFE_FIELD_STATE
+        if (actionText == null) {
+            logInsertionRefusal(focused, "span_remap_refused")
+            return TextInsertionResult.UNSAFE_FIELD_STATE
+        }
         val arguments = Bundle().apply {
             putCharSequence(
                 AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
@@ -446,7 +470,10 @@ class TextInsertionAccessibilityService : AccessibilityService() {
         val actionAccepted = runCatching {
             focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
         }.getOrDefault(false)
-        if (!actionAccepted) return TextInsertionResult.ACTION_REJECTED
+        if (!actionAccepted) {
+            logInsertionRefusal(focused, "set_text_rejected")
+            return TextInsertionResult.ACTION_REJECTED
+        }
 
         // Le champ est déjà modifié à ce stade. Compose et les WebView peuvent
         // remplacer leur source en réaction à SET_TEXT : réacquérir le focus,
@@ -844,6 +871,24 @@ class TextInsertionAccessibilityService : AccessibilityService() {
      * contrat pur [TextInsertionSpanMapper]; un objet, un flag ou une plage
      * incohérente fait échouer toute l'insertion avant ACTION_SET_TEXT.
      */
+    /**
+     * Journalise la raison d'un refus d'insertion, sans jamais consigner le
+     * contenu du champ : longueurs et indicateurs seulement.
+     */
+    private fun logInsertionRefusal(node: AccessibilityNodeInfo, reason: String) {
+        if (!BuildConfig.DEBUG) return
+        val textLength = runCatching { node.text?.length ?: -1 }.getOrDefault(-1)
+        val hint = runCatching {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && node.isShowingHintText
+        }.getOrDefault(false)
+        val selStart = runCatching { node.textSelectionStart }.getOrDefault(Int.MIN_VALUE)
+        val selEnd = runCatching { node.textSelectionEnd }.getOrDefault(Int.MIN_VALUE)
+        Log.d(
+            TARGET_LOG_TAG,
+            "refus=$reason len=$textLength hint=$hint sel=$selStart..$selEnd",
+        )
+    }
+
     private fun composeActionText(
         existing: CharSequence?,
         composition: TextInsertionComposition,
