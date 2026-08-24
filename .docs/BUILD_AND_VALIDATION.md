@@ -1,7 +1,7 @@
 # Build et validation Android
 
 > **Type** : guide de développement et état des preuves
-> **Statut** : preuve historique conservée; gate local propre final de `codex/android-alpha` réussi le 24 août 2026, validation appareil ouverte
+> **Statut** : preuve historique conservée; gate local vert et six tests instrumentés réussis sur le SM-S721W le 24 août 2026 (commit `1befe35`), suivis de deux correctifs terrain (`4667e18` VAD, `2b03030` insertion) validés en usage réel par Olivier; relance instrumentée sur le tip courant à refaire
 > **Base auditée** : `main@552c4282595922f5a7f1eeb5c6140c4b24f9dfbf`
 > **Candidate décrite** : tip de `codex/android-alpha`; exécuter `git rev-parse HEAD` pour le SHA courant
 > **Candidate mesurée** : arbre de livraison Android alpha; preuve machine locale acquise, CI distante et validation produit distinctes
@@ -209,18 +209,19 @@ la validation instrumentée et humaine sur appareil.
 - Sources et diff inspectés : oui.
 - `git diff --check` : réussi.
 - Manifeste et trois fichiers XML de configuration : syntaxe XML validée.
-- Tests présents : 182 unitaires exécutés et 6 tests instrumentés compilés.
-- Tests unitaires courants : **réussis**, 182 scénarios dans 38 suites/fichiers,
+- Tests présents : 195 unitaires exécutés (dont `VadWindowBufferTest` et `EditableFieldStateTest` ajoutés le 24 août) et 6 tests instrumentés.
+- Tests unitaires courants : **réussis**, 195 scénarios dans 40 suites/fichiers,
   0 échec, 0 erreur et 1 ignoré. L'unique scénario ignoré tente une sortie par
   lien symbolique; Windows a refusé de créer le lien faute de privilège. Un
   scénario obligatoire injecte toutefois la même redirection canonique et
   prouve sans skip que les syntaxes absolue et typée sont refusées. Les XML proviennent de
   `app/build/test-results/testDebugUnitTest/` et
   `lib/build/test-results/testDebugUnitTest/`.
-- Tests Android du diff courant : **en attente de reconnexion ADB**. Le rapport
-  alpha5 précédent contient 5 scénarios réussis sur le Samsung SM-S721W
-  (Android 16/API 36); il ne couvre pas le sixième scénario ni les deux derniers
-  durcissements statiques.
+- Tests Android : **6 scénarios réussis sur le Samsung SM-S721W (Android
+  16/API 36) le 24 août 2026 au commit `1befe35`** — 0 échec, 0 ignoré. Les
+  deux correctifs terrain suivants (`4667e18`, `2b03030`) ne touchent pas
+  SQLite; leur relance instrumentée commune sur le tip courant reste à
+  exécuter.
 - Lint courant : **réussi**, 0 erreur. Les rapports contiennent 54 avertissements
   non bloquants dans `:app` et 3 dans `:lib`, principalement `UseKtx` et versions
   de dépendances; les alertes `Aligned16KB` sont absentes.
@@ -246,7 +247,7 @@ la validation instrumentée et humaine sur appareil.
   workflow vers `main`. Son état est dynamique : exécuter
   `gh pr checks 14 --watch` au lieu de recopier ici un résultat susceptible de
   devenir périmé après le prochain commit.
-- Validation humaine : ouverte.
+- Validation humaine : partielle le 24 août 2026 — Olivier a confirmé sur appareil la transcription (échec « Input audio is too short » disparu) et l'insertion directe dans ChatGPT et Gmail après les correctifs `4667e18` et `2b03030` (voir BUGS_HISTORY.md). Matrice complète (Claude, sélections, multiligne, longue dictée, reprise) encore ouverte.
 
 Il faut donc décrire la candidate actuelle comme **implémentée et validée par le
 gate machine local, mais sans validation instrumentée ni produit du dernier

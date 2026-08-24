@@ -430,3 +430,118 @@
   La matrice appareil reste à exécuter.
 - Le relais reste opt-in : sans clé d'idempotence serveur, aucune garantie
   « exactement une fois » n'est revendiquée.
+
+## 2026-08-24 — « Transcription échouée » aléatoire malgré un audio sain
+
+### Symptôme observable
+
+- Dicter depuis l'orbe, n'importe quelle application cible.
+- Environ une dictée sur deux se termine par « la transcription a échoué;
+  l'audio est dans l'historique », sans lien avec la durée : une dictée de
+  16,9 s échoue pendant qu'une de 2,2 s réussit.
+- « Réessayer » ne récupère jamais ces dictées.
+
+### Surface et domaine
+
+- Boucle de capture de `MainRecognitionService.recordAndTranscribe` et
+  validation d'entrée du VAD Silero. Aucune application cible n'est en cause.
+
+### Détection
+
+- Séance appareil du 24 août 2026 (SM-S721W) : trace `logcat` montrant
+  `IllegalArgumentException: Input audio is too short` levée par
+  `SileroVadOnnxModel.validateInput`, puis analyse des 18 WAV conservés.
+- Le WAV de 16,9 s rejeté contenait 92,7 % d'échantillons non silencieux avec
+  un pic à 83,8 % de la pleine échelle : l'audio était complet et sain.
+
+### Hypothèses examinées
+
+1. **Micro coupé par Android hors focus** — réfutée par l'analyse d'amplitude
+   des WAV conservés.
+2. **Dictée trop courte pour le VAD** — réfutée : l'échec frappait des dictées
+   longues et épargnait des dictées courtes.
+3. **Bloc partiel d'`AudioRecord.read` sous la fenêtre minimale du VAD** —
+   confirmée : sur 18 dictées, les 8 échecs étaient exactement celles dont le
+   compte d'échantillons laissait un reliquat sous-fenêtre; aucune dictée à
+   reliquat nul n'a échoué.
+
+### Cause racine
+
+`AudioRecord.read` peut retourner un bloc plus court que le tampon. Ce bloc
+partiel était transmis tel quel au VAD, qui refuse toute fenêtre de moins de
+512 échantillons à 16 kHz; l'exception faisait échouer la dictée entière après
+la parole, alors que le WAV écrit en parallèle était complet.
+
+### Correctif
+
+`VadWindowBuffer` (`recognitionservice/audio/`) retient les blocs partiels et
+ne restitue au détecteur que des fenêtres d'au moins 512 échantillons. Le
+compteur du VAD reste aligné sur le WAV, au retard près des échantillons en
+attente, résorbé à la fenêtre suivante. Commit `4667e18`.
+
+### Test de non-régression
+
+`VadWindowBufferTest` : sept scénarios JVM purs, dont les reliquats exacts
+observés sur l'appareil (64, 128, 192, 320, 448) et la conservation intégrale
+des échantillons émis ou en attente.
+
+### Ce qui l'aurait attrapé plus tôt
+
+- Un test de la boucle de capture avec des tailles de lecture adverses plutôt
+  que des multiples exacts du tampon.
+- Journaliser la taille du bloc au moment de l'exception aurait fait le lien
+  avec `AudioRecord.read` dès la première occurrence.
+
+## 2026-08-24 — Repli presse-papiers systématique dans ChatGPT et Claude
+
+### Symptôme observable
+
+- Dicter vers un champ ChatGPT ou Claude : le texte finit dans le
+  presse-papiers au lieu de s'insérer, alors que Gmail s'insère directement.
+- Le toast annonçait parfois « Insertion impossible » alors que le texte était
+  bel et bien copié.
+
+### Surface et domaine
+
+- `TextInsertionAccessibilityService.insertIntoFocusedField` (lecture de
+  l'état du champ) et vérification de copie de `FloatingWidgetService.deliver`.
+
+### Détection
+
+- Séance appareil du 24 août 2026 : la trace montrait `targetMatch=true` —
+  la cible était trouvée et validée — suivie d'un repli, et
+  `ClipboardService: Denying clipboard access … not in focus` lors de la
+  relecture de vérification.
+
+### Cause racine
+
+Deux défauts distincts. Les champs web et React Native exposent leur composer
+vide comme un placeholder (`isShowingHintText`) avec une sélection absente
+`(-1, -1)`; cet état était classé `UNSAFE_FIELD_STATE` et l'insertion refusée
+alors que le champ était vide et sûr. Ensuite, la vérification de copie
+exigeait la relecture du presse-papiers, qu'Android refuse à une application
+hors focus même quand l'écriture a réussi — d'où le faux « Insertion
+impossible ».
+
+### Correctif
+
+`EditableFieldState.read` normalise l'état du champ : un placeholder n'est pas
+du contenu; texte nul ou vide sans sélection vaut champ vide; texte présent
+avec curseur inconnu insère en fin de champ sans rien supprimer, la
+vérification post-`ACTION_SET_TEXT` signalant toute divergence. La copie est
+considérée réussie dès que `setPrimaryClip` n'échoue pas. Chaque refus
+d'insertion est désormais journalisé avec sa raison — longueurs et indicateurs
+seulement, jamais le contenu. Commit `2b03030`.
+
+### Test de non-régression
+
+`EditableFieldStateTest` : six scénarios JVM purs couvrant placeholder, texte
+nul, curseur inconnu, sélection valide, sélection hors bornes et champ vide.
+
+### Ce qui l'aurait attrapé plus tôt
+
+- Reproduire la matrice d'insertion sur un champ web/React Native réel plutôt
+  que sur les seuls champs natifs.
+- Distinguer, dans les toasts et les journaux, « champ illisible » de « action
+  refusée » : le diagnostic est resté ouvert un jour de plus faute de savoir
+  laquelle des deux branches échouait.

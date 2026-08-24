@@ -10,7 +10,7 @@
 > **Base de la tranche audio** : `0892ad04142c7cfa5d441f7dc72a4efd0a326e57`
 > **Commit d'implémentation** : `9c18c1d52c96db39e832c768e52c310ea06899af`
 > **PR** : [#14 — brouillon](https://github.com/ReiiViilo/Chuchote-flow-android/pull/14); vérifier son HEAD et ses checks avec `gh pr view 14`
-> **État** : gate hors appareil vert; six tests instrumentés compilés mais non relancés ensemble sur le dernier diff; validation produit ouverte
+> **État** : six tests instrumentés réussis sur le SM-S721W le 24 août 2026 (commit `1befe35`, 0 échec); deux correctifs terrain ensuite poussés (`4667e18` VAD — dictées qui échouaient selon le reliquat d'échantillons, `2b03030` — insertion directe dans les champs web/React Native) et validés en usage réel par Olivier dans ChatGPT et Gmail; relance instrumentée sur le tip et matrice complète encore ouvertes; voir BUGS_HISTORY.md entrées du 24 août
 
 ## Objectif de cette reprise
 

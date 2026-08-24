@@ -7,12 +7,13 @@
 > **Portée** : application Android et son intégration au relais Chuchote
 
 Le commit ci-dessus demeure le point de départ. La candidate se trouve sur
-`codex/android-alpha`. Son gate hors appareil est vert; la commande, les
-comptes et les artefacts mesurés appartiennent à
-[`BUILD_AND_VALIDATION.md`](BUILD_AND_VALIDATION.md). Les six tests instrumentés
-du dernier diff compilent mais n'ont pas encore été relancés ensemble sur le
-Samsung. La validation humaine reste ouverte et n'est pas remplacée par ce
-gate.
+`codex/android-alpha`. Le 24 août 2026, les six tests instrumentés ont réussi
+sur le Samsung SM-S721W (commit `1befe35`), puis deux correctifs terrain ont
+rendu la dictée fonctionnelle de bout en bout — transcription et insertion
+directe dans ChatGPT et Gmail, confirmées par Olivier sur appareil (voir
+[`BUGS_HISTORY.md`](../BUGS_HISTORY.md), entrées du 24 août). Les comptes et
+artefacts appartiennent à [`BUILD_AND_VALIDATION.md`](BUILD_AND_VALIDATION.md).
+La matrice de validation complète reste ouverte.
 
 Ce dossier décrit le code Android réellement présent. Les promesses du README et de la feuille de route sont classées comme cibles lorsqu'elles ne sont pas reliées au runtime.
 
