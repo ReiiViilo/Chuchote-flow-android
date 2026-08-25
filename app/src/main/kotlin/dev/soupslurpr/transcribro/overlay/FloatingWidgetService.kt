@@ -1082,7 +1082,7 @@ class FloatingWidgetService : Service() {
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
             .setContentText("Widget de dictée actif")
-            .setSmallIcon(R.drawable.ic_launcher_monochrome)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(openApp)
             .setOngoing(true)
             .build()
