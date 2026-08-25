@@ -18,12 +18,12 @@ import dev.soupslurpr.transcribro.memory.ChuchoteStore
 import dev.soupslurpr.transcribro.preferences.PrivacyConsent
 import dev.soupslurpr.transcribro.recognitionservice.audio.AudioSegment
 import dev.soupslurpr.transcribro.recognitionservice.audio.AudioSegmentPlanner
-import dev.soupslurpr.transcribro.recognitionservice.audio.AudioSegmentSource
+import dev.soupslurpr.transcribro.recognitionservice.audio.ClosedSegment
+import dev.soupslurpr.transcribro.recognitionservice.audio.CombinedTranscription
 import dev.soupslurpr.transcribro.recognitionservice.audio.DictationAudioFocus
 import dev.soupslurpr.transcribro.recognitionservice.audio.RecoverableWavFile
 import dev.soupslurpr.transcribro.recognitionservice.audio.SegmentText
-import dev.soupslurpr.transcribro.recognitionservice.audio.SegmentTranscriber
-import dev.soupslurpr.transcribro.recognitionservice.audio.SequentialTranscriptionPipeline
+import dev.soupslurpr.transcribro.recognitionservice.audio.StreamingSegmentBuffer
 import dev.soupslurpr.transcribro.recognitionservice.audio.TranscriptionSessionGate
 import dev.soupslurpr.transcribro.recognitionservice.audio.VadWindowBuffer
 import dev.soupslurpr.transcribro.recognitionservice.silerovad.SileroVadApi
@@ -31,6 +31,7 @@ import dev.soupslurpr.transcribro.recognitionservice.silerovad.SileroVadDetector
 import dev.soupslurpr.transcribro.recognitionservice.silerovad.SileroVadLocalDataSource
 import dev.soupslurpr.transcribro.recognitionservice.silerovad.SileroVadRepository
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -109,6 +110,12 @@ class MainRecognitionService : RecognitionService() {
 
         // Plus petit bloc que Silero accepte à 16 kHz (16000 / 512 = 31.25).
         private const val MIN_VAD_WINDOW_SAMPLES = 512
+
+        // Fil de l'eau : pré-roll couvrant le rétro-padding du début de
+        // parole plus une marge de blocs, et une file courte — saturée, elle
+        // abandonne l'anticipation plutôt que de retarder la boucle micro.
+        private const val STREAM_PRE_ROLL_SAMPLES = 32_192
+        private const val STREAM_QUEUE_CAPACITY = 4
         private const val SILENCE_DB = -60f
         private const val AUDIO_DIRECTORY = "dictations"
     }
@@ -272,6 +279,9 @@ class MainRecognitionService : RecognitionService() {
         var writer: RecoverableWavFile? = null
         var samplesWrittenFallback = 0L
         var terminalStateWritten = false
+        // Déclarée avant le try : le finally la ferme sur tous les chemins,
+        // sinon le consommateur resterait suspendu et la session jamais close.
+        val streamedChannel = Channel<ClosedSegment>(capacity = STREAM_QUEUE_CAPACITY)
         var failureCode = "pipeline_interrupted"
         var endOfSpeechSignalled = false
 
@@ -293,6 +303,41 @@ class MainRecognitionService : RecognitionService() {
             ensureSessionActive(sessionGate)
             audioRecord.startRecording()
             signalReady(listener, sessionGate, sessionId)
+
+            // Transcription au fil de l'eau : chaque segment clos par le VAD
+            // part vers un consommateur unique pendant que l'utilisateur
+            // parle encore. Purement opportuniste : le WAV et le plan
+            // post-arrêt restent l'autorité, et tout doute — file saturée,
+            // échec d'un segment, bornes divergentes — jette l'anticipé.
+            val streamingBuffer = StreamingSegmentBuffer(
+                maxSegmentSamples = MAX_SEGMENT_SAMPLES,
+                preRollSamples = STREAM_PRE_ROLL_SAMPLES,
+            )
+            val streamedResults = HashMap<AudioSegment, SegmentText>()
+            var streamingAborted = false
+            val streamConsumer = CoroutineScope(currentCoroutineContext()).launch {
+                for (closed in streamedChannel) {
+                    val outcome = try {
+                        TranscriptionRuntime.transcribe(
+                            this@MainRecognitionService,
+                            closed.samples,
+                        )
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Exception) {
+                        streamingAborted = true
+                        continue // draine la file sans bloquer la boucle micro
+                    }
+                    streamedResults[closed.segment] =
+                        SegmentText(outcome.texte, viaRemote = outcome.viaRelais)
+                }
+            }
+            fun offerStreamed(closed: List<ClosedSegment>) {
+                if (streamingAborted) return
+                closed.forEach {
+                    if (!streamedChannel.trySend(it).isSuccess) streamingAborted = true
+                }
+            }
 
             val buffer = ShortArray(bufferSamples)
             val detectedSegments = mutableListOf<AudioSegment>()
@@ -316,6 +361,7 @@ class MainRecognitionService : RecognitionService() {
                 writer.append(buffer, count)
                 samplesWrittenFallback += count
                 signalRms(listener, buffer, count, sessionGate)
+                offerStreamed(streamingBuffer.append(buffer, count))
 
                 // Le détecteur voit les blocs l'un après l'autre sur cette
                 // même coroutine. Son compteur correspond donc au WAV — voir
@@ -327,9 +373,11 @@ class MainRecognitionService : RecognitionService() {
 
                 event["start"]?.let { rawStart ->
                     if (activeSpeechStart == null) {
-                        activeSpeechStart = (
+                        val paddedStart = (
                             rawStart.toLong() - SPEECH_START_PAD_SAMPLES
                             ).coerceAtLeast(0L)
+                        activeSpeechStart = paddedStart
+                        streamingBuffer.onSpeechStart(paddedStart)
                         signalBeginningOfSpeech(listener, sessionGate)
                     }
                 }
@@ -340,6 +388,7 @@ class MainRecognitionService : RecognitionService() {
                         if (end > start) detectedSegments += AudioSegment(start, end)
                     }
                     activeSpeechStart = null
+                    offerStreamed(streamingBuffer.onSpeechEnd(end))
                     signalEndOfSpeech(listener, sessionGate)
                     endOfSpeechSignalled = true
 
@@ -359,6 +408,8 @@ class MainRecognitionService : RecognitionService() {
             activeSpeechStart?.let { start ->
                 if (totalSamples > start) detectedSegments += AudioSegment(start, totalSamples)
             }
+            offerStreamed(streamingBuffer.finish())
+            streamedChannel.close()
             if (!endOfSpeechSignalled && !sessionControl.cancelRequested) {
                 signalEndOfSpeech(listener, sessionGate)
                 endOfSpeechSignalled = true
@@ -390,7 +441,6 @@ class MainRecognitionService : RecognitionService() {
                 "La dictée $activeDictationId n'est plus en attente"
             }
             val transcriptionStartedAt = System.currentTimeMillis()
-            val partialTexts = mutableListOf<String>()
 
             if (partialResults) {
                 signalPartial(
@@ -404,32 +454,53 @@ class MainRecognitionService : RecognitionService() {
                 )
             }
 
-            val pipeline = SequentialTranscriptionPipeline(
-                source = AudioSegmentSource { segment ->
-                    RecoverableWavFile.readSamples(finalAudio, segment)
-                },
-                transcriber = SegmentTranscriber { samples ->
-                    ensureSessionActive(sessionGate)
-                    val result = TranscriptionRuntime.transcribe(this@MainRecognitionService, samples)
-                    ensureSessionActive(sessionGate)
-                    result.texte.trim().takeIf { it.isNotEmpty() }?.let(partialTexts::add)
-                    SegmentText(result.texte, viaRemote = result.viaRelais)
-                },
-            )
+            // Récolter l'anticipé. join() est la barrière de visibilité :
+            // le consommateur est terminé, lire ses résultats est sûr. Au
+            // moindre doute, tout l'anticipé est jeté et le chemin lent —
+            // relecture du WAV finalisé, identique à avant — refait foi.
+            streamConsumer.join()
+            val anticipated: Map<AudioSegment, SegmentText> =
+                if (streamingAborted || streamingBuffer.bordersDiverged) {
+                    emptyMap()
+                } else {
+                    streamedResults
+                }
 
-            val combined = pipeline.transcribe(segments) { completed, total ->
+            val texts = mutableListOf<String>()
+            var usedRemote = false
+            var usedLocal = false
+            segments.forEachIndexed { index, segment ->
+                ensureSessionActive(sessionGate)
+                val result = anticipated[segment] ?: run {
+                    val samples = RecoverableWavFile.readSamples(finalAudio, segment)
+                    ensureSessionActive(sessionGate)
+                    val outcome = TranscriptionRuntime.transcribe(
+                        this@MainRecognitionService,
+                        samples,
+                    )
+                    SegmentText(outcome.texte, viaRemote = outcome.viaRelais)
+                }
+                ensureSessionActive(sessionGate)
+                result.text.trim().takeIf { it.isNotEmpty() }?.let(texts::add)
+                usedRemote = usedRemote || result.viaRemote
+                usedLocal = usedLocal || !result.viaRemote
                 if (partialResults) {
                     signalPartial(
                         listener = listener,
-                        text = store.appliquerCorrections(partialTexts.joinToString(" ")),
+                        text = store.appliquerCorrections(texts.joinToString(" ")),
                         audioDurationMs = audioDurationMs,
-                        completedSegments = completed,
-                        totalSegments = total,
+                        completedSegments = index + 1,
+                        totalSegments = segments.size,
                         sessionGate = sessionGate,
                         sessionId = sessionId,
                     )
                 }
             }
+            val combined = CombinedTranscription(
+                text = texts.joinToString(" "),
+                usedRemote = usedRemote,
+                usedLocal = usedLocal,
+            )
 
             ensureSessionActive(sessionGate)
             val rawText = combined.text.trim()
@@ -494,6 +565,7 @@ class MainRecognitionService : RecognitionService() {
             Log.e(TAG, "Échec de la dictée; le WAV est conservé", error)
             signalError(listener, SpeechRecognizer.ERROR_SERVER, sessionGate)
         } finally {
+            streamedChannel.close()
             stopAudioRecord(audioRecord)
             dictationAudioFocus.release()
             runCatching { audioCleanup.run() }
