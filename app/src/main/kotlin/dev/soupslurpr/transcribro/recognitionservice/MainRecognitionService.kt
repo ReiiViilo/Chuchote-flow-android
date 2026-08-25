@@ -6,6 +6,7 @@ import android.content.ContextParams
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.os.Build
 import android.os.Bundle
@@ -18,6 +19,7 @@ import dev.soupslurpr.transcribro.preferences.PrivacyConsent
 import dev.soupslurpr.transcribro.recognitionservice.audio.AudioSegment
 import dev.soupslurpr.transcribro.recognitionservice.audio.AudioSegmentPlanner
 import dev.soupslurpr.transcribro.recognitionservice.audio.AudioSegmentSource
+import dev.soupslurpr.transcribro.recognitionservice.audio.DictationAudioFocus
 import dev.soupslurpr.transcribro.recognitionservice.audio.RecoverableWavFile
 import dev.soupslurpr.transcribro.recognitionservice.audio.SegmentText
 import dev.soupslurpr.transcribro.recognitionservice.audio.SegmentTranscriber
@@ -113,6 +115,10 @@ class MainRecognitionService : RecognitionService() {
 
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(serviceJob + Dispatchers.IO)
+
+    private val dictationAudioFocus by lazy {
+        DictationAudioFocus(getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
+    }
     private val sessionCoordinator =
         RecognitionSessionCoordinator<ActiveRecognitionSession> { it.job }
 
@@ -281,6 +287,9 @@ class MainRecognitionService : RecognitionService() {
             writer = RecoverableWavFile.create(finalAudio, SAMPLE_RATE)
             sileroVadRepository.reset()
 
+            // La musique se met en pause le temps du micro, et repart
+            // d'elle-même dès que l'enregistrement se termine.
+            dictationAudioFocus.acquire()
             ensureSessionActive(sessionGate)
             audioRecord.startRecording()
             signalReady(listener, sessionGate, sessionId)
@@ -341,6 +350,9 @@ class MainRecognitionService : RecognitionService() {
             }
 
             stopAudioRecord(audioRecord)
+            // Le micro est fermé : la musique peut reprendre pendant que la
+            // transcription se poursuit.
+            dictationAudioFocus.release()
             ensureSessionActive(sessionGate)
 
             val totalSamples = samplesWrittenFallback
@@ -483,6 +495,7 @@ class MainRecognitionService : RecognitionService() {
             signalError(listener, SpeechRecognizer.ERROR_SERVER, sessionGate)
         } finally {
             stopAudioRecord(audioRecord)
+            dictationAudioFocus.release()
             runCatching { audioCleanup.run() }
             runCatching { sileroVadRepository.reset() }
 
