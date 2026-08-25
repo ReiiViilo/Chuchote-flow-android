@@ -516,17 +516,21 @@ class TextInsertionAccessibilityService : AccessibilityService() {
                 actualSelectionEnd = verificationNode.textSelectionEnd,
             )
         }.getOrDefault(TextInsertionVerification.ACTION_UNCONFIRMED)
-        when (verification) {
-            TextInsertionVerification.ACTION_UNCONFIRMED -> {
-                // ACTION_SET_TEXT a déjà été accepté : ne jamais retenter ni
-                // demander un collage, ce qui pourrait insérer deux fois.
-                return TextInsertionResult.ACTION_ACCEPTED_UNCONFIRMED
-            }
-            TextInsertionVerification.CURSOR_UNCONFIRMED ->
-                return TextInsertionResult.INSERTED_CURSOR_UNCONFIRMED
-            TextInsertionVerification.CONFIRMED -> Unit
+        if (verification == TextInsertionVerification.ACTION_UNCONFIRMED) {
+            // ACTION_SET_TEXT a déjà été accepté : ne jamais retenter ni
+            // demander un collage, ce qui pourrait insérer deux fois. Le texte
+            // n'ayant pas pu être relu, il n'existe aucune référence fiable
+            // pour observer une correction : pas d'apprentissage ici.
+            logInsertionRefusal(focused, "verify_text_unreadable")
+            return TextInsertionResult.ACTION_ACCEPTED_UNCONFIRMED
         }
 
+        // Le texte est vérifié identique dans les deux cas restants. Un curseur
+        // qui n'a pas atterri où on l'attendait — ce que font couramment les
+        // champs web et React Native, qui le repositionnent eux-mêmes — ne
+        // dit rien sur le texte, et l'observation des corrections compare du
+        // texte. Sortir ici privait d'apprentissage précisément les
+        // applications où Olivier dicte le plus.
         verificationTarget
             .takeUnless { runCatching { verificationNode.isPassword }.getOrDefault(true) }
             ?.let {
@@ -537,7 +541,12 @@ class TextInsertionAccessibilityService : AccessibilityService() {
                     insertionEnd = composition.contentEnd,
                 )
             }
-        return TextInsertionResult.INSERTED
+
+        return if (verification == TextInsertionVerification.CURSOR_UNCONFIRMED) {
+            TextInsertionResult.INSERTED_CURSOR_UNCONFIRMED
+        } else {
+            TextInsertionResult.INSERTED
+        }
     }
 
     // --- Apprentissage des corrections -------------------------------------
