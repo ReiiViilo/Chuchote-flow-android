@@ -27,6 +27,7 @@ import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
@@ -37,6 +38,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import dev.soupslurpr.transcribro.BuildConfig
 import dev.soupslurpr.transcribro.MainActivity
 import dev.soupslurpr.transcribro.R
 import dev.soupslurpr.transcribro.preferences.PrivacyConsent
@@ -906,6 +908,11 @@ class FloatingWidgetService : Service() {
      * consentement courant est encore confirmé; l'historique demeure la source
      * de récupération dans tous les autres cas.
      */
+    /** Journal des décisions de livraison — jamais le contenu dicté. */
+    private fun deliverLog(reason: String) {
+        if (BuildConfig.DEBUG) Log.d("ChuchoteDeliver", reason)
+    }
+
     private fun deliver(text: String, target: FocusedTextTarget?) {
         // Le consentement et l'identité du champ sont relus au dernier moment.
         // Sans preuve que la cible de départ est toujours active, ni insertion
@@ -918,7 +925,8 @@ class FloatingWidgetService : Service() {
             ).show()
             return
         }
-        if (!TextInsertionAccessibilityService.isTargetStillFocused(target)) {
+        if (target != null && !TextInsertionAccessibilityService.isTargetStillFocused(target)) {
+            deliverLog("target_lost_before_insert")
             Toast.makeText(
                 this,
                 "Le champ actif a changé. La transcription reste sauvegardée dans l’historique.",
@@ -927,7 +935,16 @@ class FloatingWidgetService : Service() {
             return
         }
 
-        val insertion = TextInsertionAccessibilityService.insertText(text, target)
+        // Aucun champ n'était actif au départ de la dictée : il n'y a ni cible
+        // à protéger ni risque de double livraison. Le presse-papiers est alors
+        // la livraison normale, pas un repli — comportement historique que le
+        // durcissement fail-closed avait involontairement supprimé.
+        val insertion = if (target == null) {
+            TextInsertionResult.NO_FOCUSED_FIELD
+        } else {
+            TextInsertionAccessibilityService.insertText(text, target)
+        }
+        deliverLog("insertion=$insertion targetCaptured=${target != null}")
         when (insertion) {
             TextInsertionResult.INSERTED -> return
             TextInsertionResult.INSERTED_CURSOR_UNCONFIRMED -> {
@@ -973,7 +990,8 @@ class FloatingWidgetService : Service() {
             ).show()
             return
         }
-        if (!TextInsertionAccessibilityService.isTargetStillFocused(target)) {
+        if (target != null && !TextInsertionAccessibilityService.isTargetStillFocused(target)) {
+            deliverLog("target_lost_before_copy")
             Toast.makeText(
                 this,
                 "Le champ actif a changé. Aucun texte n’a été copié; le résultat reste dans l’historique.",
