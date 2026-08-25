@@ -26,6 +26,7 @@ import dev.soupslurpr.transcribro.recognitionservice.audio.SegmentText
 import dev.soupslurpr.transcribro.recognitionservice.audio.StreamingSegmentBuffer
 import dev.soupslurpr.transcribro.recognitionservice.audio.TranscriptionSessionGate
 import dev.soupslurpr.transcribro.recognitionservice.audio.VadWindowBuffer
+import dev.soupslurpr.transcribro.remote.SyncPusher
 import dev.soupslurpr.transcribro.recognitionservice.silerovad.SileroVadApi
 import dev.soupslurpr.transcribro.recognitionservice.silerovad.SileroVadDetector
 import dev.soupslurpr.transcribro.recognitionservice.silerovad.SileroVadLocalDataSource
@@ -130,6 +131,8 @@ class MainRecognitionService : RecognitionService() {
         RecognitionSessionCoordinator<ActiveRecognitionSession> { it.job }
 
     private val store by lazy { ChuchoteStore.get(this) }
+
+    private val syncPusher by lazy { SyncPusher(this) }
 
     private val sileroVadRepository = SileroVadRepository(
         SileroVadLocalDataSource(
@@ -535,6 +538,16 @@ class MainRecognitionService : RecognitionService() {
             )
             if (!completed) throw CancellationException("Annulation avant l'état terminal")
             terminalStateWritten = true
+            // La dictée est durablement terminée : elle part vers le cerveau
+            // commun, best-effort, hors du chemin de livraison.
+            syncPusher.pushDictation(
+                localId = activeDictationId,
+                createdAtMs = System.currentTimeMillis(),
+                rawText = rawText,
+                finalText = correctedText,
+                durationMs = audioDurationMs,
+                source = source,
+            )
             signalResults(listener, correctedText, sessionGate, sessionId)
         } catch (error: CancellationException) {
             failureCode = if (sessionControl.cancelRequested) "cancelled" else "service_interrupted"
