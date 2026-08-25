@@ -135,6 +135,7 @@ internal data class TargetIdentity(
 }
 
 private const val TARGET_LOG_TAG = "ChuchoteTarget"
+private const val WATCH_LOG_TAG = "ChuchoteWatch"
 
 /**
  * Insère le texte dicté seulement si le champ capturé au début de la dictée
@@ -559,7 +560,14 @@ class TextInsertionAccessibilityService : AccessibilityService() {
             fullText = fullBaseline,
             insertionStart = insertionStart,
             insertionEnd = insertionEnd,
-        ) ?: return
+        )
+        if (window == null) {
+            if (BuildConfig.DEBUG) Log.d(WATCH_LOG_TAG, "watch_refused len=${fullBaseline.length}")
+            return
+        }
+        if (BuildConfig.DEBUG) {
+            Log.d(WATCH_LOG_TAG, "watch_armed inserted=${insertionEnd - insertionStart} retained=${window.retainedCharacterCount}")
+        }
 
         handler.removeCallbacks(pollRunnable)
         watchTarget = target
@@ -608,6 +616,7 @@ class TextInsertionAccessibilityService : AccessibilityService() {
                 }
             }
 
+        if (BuildConfig.DEBUG) Log.d(WATCH_LOG_TAG, "watch_done proposals=${propositions.size}")
         if (propositions.isNotEmpty()) showProposal(propositions, target)
     }
 
