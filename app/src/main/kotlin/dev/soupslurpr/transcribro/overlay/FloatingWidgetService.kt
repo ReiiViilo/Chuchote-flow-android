@@ -536,12 +536,16 @@ class FloatingWidgetService : Service() {
         val cancelParams = LinearLayout.LayoutParams(dp(32), dp(32))
         val waveParams = LinearLayout.LayoutParams(dp(CONTENT_WIDTH_DP), dp(34))
 
+        // L'onde est décalée de quelques pixels vers la croix : la distance
+        // croix-orbe ne change pas, mais le tracé respire côté sphère.
         if (onLeft) {
-            waveParams.marginStart = dp(8)
+            waveParams.marginStart = dp(5)
+            waveParams.marginEnd = dp(3)
             row.addView(cancel, cancelParams)
             row.addView(wave, waveParams)
         } else {
-            cancelParams.marginStart = dp(8)
+            waveParams.marginStart = dp(3)
+            cancelParams.marginStart = dp(5)
             row.addView(wave, waveParams)
             row.addView(cancel, cancelParams)
         }
@@ -1102,7 +1106,11 @@ class FloatingWidgetService : Service() {
         private const val CONTENT_WIDTH_DP = 72
         private const val PANEL_WIDTH_DP = 112
         // Le tracé colle presque à la sphère : ils forment un seul objet.
-        private const val PANEL_GAP_DP = 2
+        // Négatif à dessein : la sphère visible ne remplit pas sa fenêtre (le
+        // voile de fumée s'estompe bien avant le bord). Le panneau chevauche
+        // cette zone transparente pour que l'onde naisse au bord visible de
+        // la sphère, à peu près à égale distance entre elle et la croix.
+        private const val PANEL_GAP_DP = -12
         private const val PANEL_HEIGHT_DP = 44
 
         private const val POSITION_PREFERENCES = "floating_widget_position"
