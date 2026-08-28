@@ -69,7 +69,27 @@ class CorrectionWatchWindowTest {
     }
 
     @Test
-    fun `refuses learning without a right anchor at the end of a field`() {
-        assertNull(CorrectionWatchWindow.create("mot", 0, 3))
+    fun `arms at the end of a field and follows the growing tail`() {
+        // Le cas de presque toutes les dictées : l'insertion touche la fin du
+        // champ. L'apprentissage doit s'armer, et la capture suivre la fin.
+        val window = CorrectionWatchWindow.create("Bonjour chichotte", 8, 17)
+        checkNotNull(window)
+        assertEquals("chichotte", window.baseline)
+        // Correction du dernier mot : capturée.
+        assertEquals("Chuchote", window.capture("Bonjour Chuchote"))
+        // L'utilisateur continue d'écrire : la capture inclut la suite —
+        // c'est CorrectionDiff qui refuse les ajouts purs, pas la fenêtre.
+        assertEquals(
+            "chichotte et ensuite",
+            window.capture("Bonjour chichotte et ensuite"),
+        )
+    }
+
+    @Test
+    fun `arms in an empty field`() {
+        val window = CorrectionWatchWindow.create("salut", 0, 5)
+        checkNotNull(window)
+        assertEquals("salut", window.baseline)
+        assertEquals("chalut", window.capture("chalut"))
     }
 }
