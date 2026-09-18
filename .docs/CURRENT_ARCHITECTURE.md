@@ -265,7 +265,7 @@ Changer cette identité peut installer une nouvelle application séparée et dé
 
 - Neon, PostgreSQL ou SDK Supabase;
 - compte et authentification utilisateur;
-- synchronisation historique ou dictionnaire;
+- tirage depuis le relais (historique comme dictionnaire) : seule la poussée best-effort `SyncPusher` existe, sans reprise ni accusé de réception;
 - UUID global de dictée;
 - post-traitement LLM;
 - apprentissage statistique;

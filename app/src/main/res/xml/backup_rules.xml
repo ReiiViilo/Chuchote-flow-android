@@ -13,4 +13,7 @@
     <!-- Un bearer token restauré sur un autre appareil resterait utilisable
          sans nouvelle authentification auprès du relais. -->
     <exclude domain="sharedpref" path="remote_transcription.xml" />
+    <!-- File de synchronisation : pierres tombales en attente, donc des mots
+         du dictionnaire personnel. -->
+    <exclude domain="sharedpref" path="chuchote_sync.xml" />
 </full-backup-content>

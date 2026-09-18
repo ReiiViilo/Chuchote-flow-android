@@ -14,8 +14,11 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /** Versionne le consentement quand les traitements de données changent. */
 object PrivacyConsent {
+    // 2026-09-15 : le dictionnaire personnel et les dictées terminées sont
+    // poussés au relais (`/api/sync/*`) — traitement nouveau, consentement à
+    // redemander.
     const val CURRENT_POLICY_PREFERENCE =
-        "ACCEPTED_PRIVACY_POLICY_AND_LICENSE_2026_08_23"
+        "ACCEPTED_PRIVACY_POLICY_AND_LICENSE_2026_09_15"
     const val PREVIOUS_POLICY_PREFERENCE =
         "ACCEPTED_PRIVACY_POLICY_AND_LICENSE_V0.3.0"
 

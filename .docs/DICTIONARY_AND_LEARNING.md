@@ -115,7 +115,7 @@ Référence : [`ChuchoteStore.kt`](../app/src/main/kotlin/dev/soupslurpr/transcr
 - expressions multi-mots évaluées sans substitution excessive;
 - langue et contexte;
 - déduplication et résolution des contradictions;
-- synchronisation avec les mots personnalisés du desktop;
+- fusion avec les mots personnalisés du desktop : depuis le 15 septembre 2026, chaque entrée est poussée au relais (`/api/sync/dictionary`) à l'ajout, en tombstone à la suppression (mise en file locale bornée si le relais est injoignable), et la liste entière au démarrage si elle a changé; le desktop la tire de là. La réciproque (desktop → Android) et la fusion avec `custom_words` restent à faire;
 - moyen de désactiver ou annuler une correction apprise;
 - corpus de test représentatif de la manière de parler d'Olivier.
 

@@ -636,3 +636,66 @@ transmis tel quel.
   distinguer « le modèle l'a dit » de « le dictionnaire l'a réécrit ».
 - Un test qui envoie au modèle une phrase sans rapport avec le vocabulaire
   soufflé et vérifie qu'aucun mot du vocabulaire n'apparaît dans la sortie.
+
+## 2026-09-15 — Une suppression du dictionnaire faite hors ligne n'atteignait jamais le relais
+
+### Symptôme observable
+
+Sur la même branche, avant tout appareil : une entrée supprimée dans l'écran
+Dictionnaire pendant que le relais est injoignable reste appliquée par le
+desktop indéfiniment. La republication de démarrage ne porte que des entrées
+vivantes, donc rien ne vient jamais dire au relais que celle-ci est morte.
+
+### Surface et domaine
+
+`SyncPusher` (`remote`), file `pending_tombstones` dans le
+`SharedPreferences` `chuchote_sync`.
+
+### Détection
+
+Revue `code-reviewer` de la branche (ronde 2, P1), puis ronde 3 (N2) sur le
+correctif lui-même : la file n'avait ni condition d'entrée, ni plafond, ni
+péremption — un appareil sans relais accumulait les mots supprimés, et une
+pierre tombale d'il y a un mois pouvait effacer un mot réappris entre-temps
+sur le desktop.
+
+### Correctif
+
+- La pierre tombale est mise en file **avant** l'envoi, dans `chuchote_sync`
+  (exclu des sauvegardes), et rejouée à chaque suppression et au démarrage,
+  jusqu'à ce que le relais l'ait acceptée; un mot réappris retire la sienne.
+- La file n'est alimentée que si un relais est configuré; elle est bornée à
+  200 paires (les plus anciennes cèdent la place) et une pierre tombale de
+  plus de 30 jours n'est plus rejouée (`PendingTombstones`, Kotlin pur).
+- Une file illisible est journalisée une fois puis abandonnée.
+- Tranché par Olivier le 16 septembre 2026 : le verrou de la file n'est plus
+  tenu pendant les envois, les pierres tombales acceptées sont retirées de la
+  file courante (à l'identité paire + date), les rejeux sont sérialisés entre
+  eux; un drapeau collant `sync_configured` alimente la file même relais
+  momentanément éteint (rotation de jeton); un consentement retiré ne vide pas
+  la file. Reste : le relais date lui-même chaque réception — un rejeu tardif
+  reste dernier-écrit-gagne jusqu'à la tranche 1 du plan.
+
+### Test de non-régression
+
+`PendingTombstonesTest` : six scénarios JVM purs — aller-retour avec date,
+file absente ou illisible, éléments muets ou en double, plafond et
+remplacement d'un doublon, rejeu qui écarte vivantes et périmées et ne garde
+que ce qui n'est pas parti, retrait des envoyées sur la file courante à
+l'identité paire + date. `SyncPayloadsTest` : sept scénarios — champs
+exigés par le relais, facultatifs en `null`, ajout et pierre tombale
+symétriques, lots de 500, empreinte insensible à l'ordre, empreinte qui
+distingue la frontière entendu/remplacement, JSON final.
+`BackupPolicyContractTest` exige désormais l'exclusion de `chuchote_sync.xml`
+des trois règles de sauvegarde.
+
+### Ce qui reste à prouver sur l'appareil
+
+Les étapes « Synchronisation vers le relais » du plan de test alpha (§6),
+dont la suppression hors ligne puis relance et le relais non configuré.
+
+### Ce qui l'aurait attrapé plus tôt
+
+- Un test de politique de rejeu séparé du transport, dès la première version
+  de la file : les trois manques de la ronde 3 étaient tous dans du code que
+  rien n'exerçait sur la JVM.

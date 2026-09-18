@@ -20,13 +20,13 @@ Ce dépôt vise, avec [Chuchote-Flow](https://github.com/ReiiViilo/Chuchote-Flow
         └──────────────┘   └────────────────┘
 ```
 
-La cible est qu'une dictée faite sur n'importe quel appareil aboutisse au même historique et au même dictionnaire. Cette synchronisation n'est pas encore implémentée dans le client Android.
+La cible est qu'une dictée faite sur n'importe quel appareil aboutisse au même historique et au même dictionnaire. Le client Android en livre la première moitié : quand le relais est configuré et la politique acceptée, il pousse chaque dictée terminée et chaque changement du dictionnaire au relais (`/api/sync/*`), au mieux, sans jamais rien tirer. L'historique commun et le dictionnaire commun consultables depuis Android ne sont pas encore implémentés.
 
 ## Ce que Transcribro fournit déjà
 
 - Clavier vocal Android (IME) : le micro apparaît dans n'importe quelle app, le texte dicté s'insère dans le champ actif
 - Transcription 100 % locale avec whisper.cpp + détection de voix Silero VAD
-- Transcription locale utilisable sans relais et sans télémétrie applicative. Le fork déclare toutefois `INTERNET`, car un relais de transcription facultatif peut être configuré; lorsqu'il est activé, des segments audio et un prompt de vocabulaire quittent l'appareil.
+- Transcription locale utilisable sans relais et sans télémétrie applicative. Le fork déclare toutefois `INTERNET`, car un relais facultatif peut être configuré; lorsqu'il est activé, des segments audio et un prompt de vocabulaire quittent l'appareil pour la transcription, et le **texte de chaque dictée terminée** (même transcrite localement) ainsi que les **entrées du dictionnaire** (ajoutées ou retirées) sont poussés au relais pour la synchronisation. Détail dans [.docs/REMOTE_RELAY_PRIVACY_SECURITY.md](.docs/REMOTE_RELAY_PRIVACY_SECURITY.md).
 
 ## Ce que ce fork change
 

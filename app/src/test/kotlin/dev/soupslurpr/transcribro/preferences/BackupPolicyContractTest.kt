@@ -12,35 +12,30 @@ import org.w3c.dom.Element
  * Contrat de confidentialité pur pour les deux générations de règles Android.
  *
  * Le test lit les sources XML plutôt qu'un état Android simulé : il garantit
- * que le bearer token ne redevient pas éligible à Auto Backup ou au transfert
- * d'appareil à la suite d'une modification de ressources.
+ * que ni le bearer token ni la file de synchronisation (`chuchote_sync`, qui
+ * porte des mots du dictionnaire personnel en attente de suppression) ne
+ * redeviennent éligibles à Auto Backup ou au transfert d'appareil à la suite
+ * d'une modification de ressources.
  */
 class BackupPolicyContractTest {
     @Test
-    fun `legacy backup excludes remote bearer token`() {
+    fun `legacy backup excludes remote bearer token and sync queue`() {
         val document = parseResource("backup_rules.xml")
 
-        assertExclude(
-            root = document.documentElement,
-            domain = "sharedpref",
-            path = "remote_transcription.xml",
-        )
+        SECRET_PREFERENCES.forEach { path ->
+            assertExclude(root = document.documentElement, domain = "sharedpref", path = path)
+        }
     }
 
     @Test
-    fun `cloud backup and device transfer exclude remote bearer token`() {
+    fun `cloud backup and device transfer exclude remote bearer token and sync queue`() {
         val document = parseResource("data_extraction_rules.xml")
 
-        assertExclude(
-            root = requireSection(document, "cloud-backup"),
-            domain = "sharedpref",
-            path = "remote_transcription.xml",
-        )
-        assertExclude(
-            root = requireSection(document, "device-transfer"),
-            domain = "sharedpref",
-            path = "remote_transcription.xml",
-        )
+        listOf("cloud-backup", "device-transfer").forEach { section ->
+            SECRET_PREFERENCES.forEach { path ->
+                assertExclude(root = requireSection(document, section), domain = "sharedpref", path = path)
+            }
+        }
     }
 
     private fun parseResource(name: String): Document {
@@ -73,5 +68,9 @@ class BackupPolicyContractTest {
             "Exclusion absente sous <${root.tagName}>: domain=$domain path=$path",
             found,
         )
+    }
+
+    private companion object {
+        val SECRET_PREFERENCES = listOf("remote_transcription.xml", "chuchote_sync.xml")
     }
 }

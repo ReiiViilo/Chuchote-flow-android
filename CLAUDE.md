@@ -28,8 +28,13 @@ Le contexte complet de la candidate vit dans
   qu'un rapport `connectedQaAndroidTest` courant ne le prouve pas.
 - Ne pas nommer une candidate `alpha6`, promouvoir la PR ou fusionner vers
   `main` avant les preuves appareil et la validation explicite d'Olivier.
-- Android et desktop restent deux clients locaux séparés. Aucun backend de
-  synchronisation Neon, Supabase ou PostgreSQL n'est implémenté ici.
+- Android et desktop restent deux clients locaux : la vérité est `chuchote.db`.
+  La seule synchronisation implémentée ici est `SyncPusher` — poussée
+  best-effort des dictées terminées et des mots du dictionnaire (ajouts,
+  pierres tombales rejouées au démarrage, liste entière par lots) vers le relais
+  (`/api/sync/*`), sous consentement courant. Aucun accès direct à Neon,
+  Supabase ou PostgreSQL, et aucun tirage depuis le relais (voir le plan
+  `Chuchote-Flow/.docs/PLAN_SYNC_TEMPS_REEL_ET_UI_COMMUNE.md`).
 - Ne jamais versionner APK, WAV, SQLite, `local.properties`, clé ADB, keystore,
   secret de relais, journaux appareil ou contenu de dictée.
 - Le sous-module `whisper.cpp` doit rester au gitlink versionné, sauf tâche

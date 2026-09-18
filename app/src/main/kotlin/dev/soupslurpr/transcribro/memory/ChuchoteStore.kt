@@ -12,6 +12,7 @@ import dev.soupslurpr.transcribro.recognitionservice.audio.HistoricalAudioRehabi
 import dev.soupslurpr.transcribro.recognitionservice.audio.PrivateAudioPathResolver
 import dev.soupslurpr.transcribro.recognitionservice.audio.RecoverableWavFile
 import dev.soupslurpr.transcribro.recognitionservice.audio.TranscriptionSessionGate
+import dev.soupslurpr.transcribro.remote.SyncPusher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -196,6 +197,19 @@ class ChuchoteStore private constructor(
         EmptyCoroutineContext
     }
     private val scope = CoroutineScope(storeJob + dbDispatcher + isolatedTestExceptionHandler)
+
+    // Nul pour un magasin de test isolé : c'est ici, et nulle part ailleurs,
+    // que se décide si une écriture locale est publiée — un site d'appel qui
+    // oublierait la garde n'est plus possible. Paresseux : aucune
+    // configuration réseau n'est lue tant qu'aucun mot n'est appris.
+    // Dépendance assumée de `memory` vers `remote` pour cette tranche : la
+    // publication suit l'écriture locale, quel que soit l'écran qui l'a
+    // demandée. Une interface possédée par `memory` viendra quand le desktop
+    // publiera aussi (plan de synchronisation, tranche 2).
+    private val syncPusher: SyncPusher? by lazy {
+        if (isolatedTestStore) null else SyncPusher(context)
+    }
+
     private val initializationResult = CompletableDeferred<Unit>()
     private val initializationJob: Job
 
@@ -211,6 +225,17 @@ class ChuchoteStore private constructor(
             // Publier les données existantes avant toute maintenance historique.
             rechargerDictees()
             rechargerDictionnaire()
+            // Remonter le dictionnaire au démarrage s'il a changé depuis la
+            // dernière remontée, et rejouer les suppressions restées en file.
+            // Sans cela, les mots appris avant l'arrivée de la synchronisation
+            // ne partiraient jamais — seuls les nouveaux ajouts le feraient —
+            // et un ajout ou un retrait manqué hors ligne ne serait pas
+            // réparé. Best-effort, donc derrière la même frontière que le
+            // reste de la maintenance : jamais un prérequis au chargement.
+            StoreStartupBoundary.runBestEffort(
+                step = { syncPusher?.synchroniserAuDemarrage(_dictionnaire.value) },
+                onFailure = ::journaliserEchecSynchronisation,
+            )
             var didMutateHistory = false
             val markHistoryMutation = { didMutateHistory = true }
             StoreStartupBoundary.runBestEffort(
@@ -474,13 +499,26 @@ class ChuchoteStore private constructor(
                 put("remplacer_par", remplacerPar.trim())
             })
             rechargerDictionnaire()
+            // Publier depuis le magasin plutôt que depuis l'appelant : les deux
+            // chemins d'ajout — pop-up de correction et saisie manuelle — sont
+            // ainsi couverts, et un troisième le serait d'office. L'envoi reste
+            // best-effort et postérieur à l'écriture locale, qui fait foi.
+            syncPusher?.pushDictionaryEntry(mot, remplacerPar)
         }
     }
 
     fun supprimerEntree(id: Long) {
         scope.launch {
+            // Lire la paire avant de l'effacer : la pierre tombale envoyée au
+            // cerveau commun porte (entendu, remplacement), sa clé côté relais.
+            // Sans elle, l'autre appareil continuerait d'appliquer un mot
+            // qu'on vient de retirer ici.
+            val entree = _dictionnaire.value.firstOrNull { it.id == id }
             db.writableDatabase.delete("dictionnaire", "id = ?", arrayOf(id.toString()))
             rechargerDictionnaire()
+            if (entree != null) {
+                syncPusher?.pushDictionaryTombstone(entree.entendu, entree.remplacerPar)
+            }
         }
     }
 
@@ -536,6 +574,14 @@ class ChuchoteStore private constructor(
             STORE_TAG,
             "Réhabilitation audio historique ignorée; chargement normal poursuivi",
             error,
+        )
+    }
+
+    private fun journaliserEchecSynchronisation(error: Throwable) {
+        // Sans le message : une exception réseau peut nommer l'hôte du relais.
+        Log.w(
+            STORE_TAG,
+            "Synchronisation du dictionnaire non lancée au démarrage (${error.javaClass.simpleName}); chargement normal poursuivi",
         )
     }
 

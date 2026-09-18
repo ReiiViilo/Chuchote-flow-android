@@ -98,7 +98,9 @@ synchronisation. Une politique de quota disque explicite reste à concevoir.
 
 ## Préférences
 
-Les préférences générales utilisent DataStore, notamment thème, acceptation, retour au clavier, démarrage et envoi automatiques. L'acceptation est versionnée par `ACCEPTED_PRIVACY_POLICY_AND_LICENSE_2026_08_23`; la clé historique n'accorde aucun accès aux traitements de la politique courante.
+Les préférences générales utilisent DataStore, notamment thème, acceptation, retour au clavier, démarrage et envoi automatiques. L'acceptation est versionnée par `ACCEPTED_PRIVACY_POLICY_AND_LICENSE_2026_09_15` (politique du 15 septembre 2026, qui divulgue la synchronisation du texte des dictées et du dictionnaire vers le relais); les clés historiques (`…_2026_08_23`, `…V0.3.0`) n'accordent aucun accès aux traitements de la politique courante.
+
+La synchronisation utilise un `SharedPreferences` nommé `chuchote_sync`, exclu des sauvegardes et transferts Android au même titre que `remote_transcription` : l'empreinte SHA-256 du dernier dictionnaire republié avec succès (`dictionary_signature`) et la file des pierres tombales que le relais n'a pas encore acceptées (`pending_tombstones`, JSON d'objets `heard` / `replace_with` / `since`, donc des mots du dictionnaire personnel — alimentée seulement si la synchronisation a déjà été configurée une fois — drapeau `sync_configured` —, 200 paires au plus, rejouée 30 jours au plus). Référence : [`SyncPusher.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/remote/SyncPusher.kt).
 
 Les paramètres du relais utilisent un `SharedPreferences` séparé nommé `remote_transcription` :
 

@@ -249,7 +249,11 @@ gh pr checks 14 --watch
 
 ## Non-objectifs de cette branche
 
-- synchronisation Android–desktop;
+- synchronisation Android–desktop **complète** — la branche livre la moitié
+  poussée (dictées et dictionnaire vers le relais, `SyncPusher`, 15 septembre
+  2026); le tirage depuis le relais, l'historique commun et la fusion du
+  vocabulaire restent hors périmètre (plan dans le dépôt desktop,
+  `.docs/PLAN_SYNC_TEMPS_REEL_ET_UI_COMMUNE.md`);
 - choix définitif entre Neon, Supabase ou une autre couche de données;
 - authentification ou identité d'appareil;
 - upload cloud des WAV;
