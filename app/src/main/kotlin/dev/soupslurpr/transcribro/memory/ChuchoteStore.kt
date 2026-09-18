@@ -484,35 +484,23 @@ class ChuchoteStore private constructor(
         }
     }
 
-    fun appliquerCorrections(texte: String): String {
-        var resultat = texte
-        for (entree in _dictionnaire.value) {
-            if (entree.remplacerPar.isEmpty()) continue
-            val regex = Regex(
-                "(?iu)(?<![\\p{L}\\p{N}])${Regex.escape(entree.entendu)}(?![\\p{L}\\p{N}])"
-            )
-            resultat = regex.replace(resultat) { correspondance ->
-                val brut = entree.remplacerPar
-                if (
-                    correspondance.value.first().isUpperCase() &&
-                    brut.firstOrNull()?.isLowerCase() == true
-                ) {
-                    brut.replaceFirstChar { it.uppercase() }
-                } else {
-                    brut
-                }
-            }
+    fun appliquerCorrections(texte: String): String =
+        DictionnaireSubstitution.appliquer(texte, _dictionnaire.value) { entree, occurrences ->
+            // L'identifiant seulement : une entrée est bâtie à partir de la
+            // transcription et du champ corrigé, donc son texte n'a pas plus sa
+            // place dans logcat qu'une dictée. L'identifiant suffit à retrouver
+            // l'entrée responsable d'une correction inattendue (écran
+            // Dictionnaire, ou `chuchote.db` en séance appareil).
+            Log.d(TAG_DICTIONNAIRE, "Substitution #${entree.id} ×$occurrences")
         }
-        return resultat
-    }
 
-    fun motsPourBiais(): String {
-        val mots = _dictionnaire.value
-            .map { it.remplacerPar.ifEmpty { it.entendu } }
-            .distinct()
-        if (mots.isEmpty()) return ""
-        return mots.joinToString(", ").take(MAX_BIAIS_CARACTERES)
-    }
+    /**
+     * Le vocabulaire soufflé au relais : les entrées de vocabulaire seulement.
+     * Les cibles de substitution en sont exclues — voir
+     * [DictionnaireSubstitution] pour la raison.
+     */
+    fun motsPourBiais(): String =
+        DictionnaireSubstitution.vocabulairePourBiais(_dictionnaire.value, MAX_BIAIS_CARACTERES)
 
     // ------------------------------------------------------------------
 
@@ -870,6 +858,7 @@ class ChuchoteStore private constructor(
         private const val HISTORICAL_AUDIO_INDEX = "idx_dictees_historical_audio_errors"
         private const val MAX_ERROR_CODE_LENGTH = 120
         private const val MAX_BIAIS_CARACTERES = 600
+        private const val TAG_DICTIONNAIRE = "ChuchoteDictionnaire"
         private const val STORE_TAG = "ChuchoteStore"
         private const val DICTEE_COLUMNS =
             "id, texte, raw_text, cree_le, duree_ms, source, audio_path, " +

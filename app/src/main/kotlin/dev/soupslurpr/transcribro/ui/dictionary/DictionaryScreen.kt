@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.soupslurpr.transcribro.memory.ChuchoteStore
+import dev.soupslurpr.transcribro.memory.DictionnaireSubstitution
 import dev.soupslurpr.transcribro.ui.reusablecomposables.ScreenLazyColumn
 
 /**
@@ -57,7 +58,9 @@ fun DictionaryScreen() {
                                 "d'entreprise, expressions à toi. Avec seulement un mot, " +
                                 "la transcription apprend à le reconnaître. Avec un " +
                                 "remplacement, la correction s'applique automatiquement " +
-                                "à chaque dictée — par exemple « chichotte » → « Chuchote »."
+                                "à chaque dictée — par exemple « chichotte » → « Chuchote » — " +
+                                "pourvu que la forme entendue fasse au moins " +
+                                "${DictionnaireSubstitution.LONGUEUR_MIN_ENTENDU} caractères."
                     )
                     Spacer(Modifier.size(12.dp))
                     OutlinedTextField(
@@ -114,11 +117,28 @@ fun DictionaryScreen() {
                         )
                     },
                     supportingContent = {
+                        // Une correction dont la forme entendue est trop courte
+                        // n'est jamais appliquée (voir DictionnaireSubstitution) :
+                        // le dire ici plutôt que de laisser croire qu'elle agit.
+                        // Même mesure que la garde elle-même (`isBlank`) : une
+                        // entrée dont le remplacement n'est que des espaces
+                        // est du vocabulaire, pas une correction inactive.
+                        val vocabulaire = entree.remplacerPar.isBlank()
+                        val inactive = !vocabulaire &&
+                            !DictionnaireSubstitution.estSubstitutionApplicable(entree)
                         Text(
-                            if (entree.remplacerPar.isEmpty()) {
-                                "Mot à reconnaître"
+                            text = when {
+                                vocabulaire -> "Mot à reconnaître"
+                                inactive ->
+                                    "Correction inactive : forme entendue trop courte " +
+                                        "(${DictionnaireSubstitution.LONGUEUR_MIN_ENTENDU} caractères " +
+                                        "minimum, ponctuation exclue)"
+                                else -> "Correction automatique"
+                            },
+                            color = if (inactive) {
+                                MaterialTheme.colorScheme.error
                             } else {
-                                "Correction automatique"
+                                MaterialTheme.colorScheme.onSurfaceVariant
                             }
                         )
                     },

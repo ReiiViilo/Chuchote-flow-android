@@ -545,3 +545,94 @@ nul, curseur inconnu, sélection valide, sélection hors bornes et champ vide.
 - Distinguer, dans les toasts et les journaux, « champ illisible » de « action
   refusée » : le diagnostic est resté ouvert un jour de plus faute de savoir
   laquelle des deux branches échouait.
+
+## 2026-09-15 — « up » inséré là où rien de tel n'a été dit
+
+### Symptôme observable
+
+- Après avoir appris une correction comme « hop hop » → « OpOp », des dictées
+  sans le moindre rapport voient apparaître « up » (ou une forme voisine) à
+  des endroits où cela n'a aucun sens.
+- Olivier attribue l'effet à l'autocorrecteur : « comme s'il y avait une trop
+  grande sensibilité ou une incompréhension de certaine diction ».
+
+### Surface et domaine
+
+- Dictionnaire personnel : substitution après transcription
+  (`ChuchoteStore.appliquerCorrections`) et vocabulaire soufflé au relais
+  (`ChuchoteStore.motsPourBiais`, `RemoteTranscriber`).
+
+### Détection
+
+- Retour d'Olivier du 15 septembre 2026, sans journal appareil ni contenu du
+  dictionnaire. Le diagnostic ci-dessous est donc une lecture du code, pas une
+  reproduction : la confirmation sur téléphone reste à faire (voir plus bas).
+
+### Cause racine (hypothèse principale, à confirmer)
+
+Deux mécanismes se cumulaient, et chacun suffit à produire le symptôme :
+
+1. **Le vocabulaire soufflé recopié.** `motsPourBiais()` envoyait au relais,
+   pour chaque entrée de substitution, sa *cible* (« OpOp »), en énumération
+   nue. Whisper reproduit volontiers le vocabulaire soufflé sur un segment
+   court ou hésitant — et la transcription au fil de l'eau découpe justement
+   la parole en segments courts. Un souffle, une hésitation, un « hop »
+   ordinaire deviennent « OpOp », « Op op », « up ».
+2. **Une forme entendue trop courte.** Rien n'empêchait une entrée manuelle
+   comme « op » → « OpOp » : avec une regex insensible à la casse, le
+   moindre « op » isolé était réécrit. Le seuil de trois caractères
+   n'existait qu'à l'apprentissage, pas à l'application.
+
+### Correctif
+
+- `DictionnaireSubstitution` (Kotlin pur) reprend la substitution et le
+  vocabulaire : les cibles de substitution ne sont plus soufflées au modèle —
+  la substitution les garantit déjà —, seules les entrées de vocabulaire le
+  sont, en liste séparée par des virgules, sans préfixe; une forme entendue
+  dont le cœur (mot débarrassé de la ponctuation qui le borde, comme
+  `CorrectionDiff` le mesure) fait moins de trois caractères ne déclenche
+  jamais de substitution, et l'écran Dictionnaire la signale « inactive »;
+  chaque entrée qui modifie un texte est journalisée (`Log.d`, tag
+  `ChuchoteDictionnaire`, **identifiant** de l'entrée et nombre d'occurrences
+  seulement — jamais son texte ni le texte dicté); les regex sont compilées
+  une fois par liste.
+- `RemoteTranscriber` n'envoie plus `temperature` au relais : `0` était déjà
+  la valeur par défaut du fournisseur, et n'y rend pas le décodage
+  déterministe (il remonte la température de lui-même sur échec). L'envoyer
+  ne changeait rien; le corps multipart vit désormais dans
+  `TranscriptionRequestBody`, testé sur la JVM.
+- Effet attendu sur « OpOp » : le modèle produit désormais ce qu'il entend
+  (« hop hop », « op op »…) et la substitution corrige ce qu'elle connaît. Si
+  une variante entendue manque, l'ajouter comme entrée de substitution; qui
+  veut orienter le modèle vers un mot l'ajoute comme entrée de vocabulaire, en
+  connaissance de cause.
+
+### Test de non-régression
+
+`DictionnaireSubstitutionTest` : onze scénarios JVM purs — frontières de
+mots, chevauchement (« chop hop hop » → « chop OpOp ») et reprise après une
+lettre multi-octets (« éhop hop hop »), capitale initiale,
+occurrences multiples et accents (mêmes vecteurs que `dictionary.rs` desktop),
+entrées vides, forme trop courte ignorée, mesure du cœur, journal des entrées
+appliquées, réutilisation du cache, cibles exclues du vocabulaire, liste de
+vocabulaire seule, borne sans coupure de mot.
+`TranscriptionRequestBodyTest` : trois scénarios — vocabulaire dans `prompt`
+en UTF-8, absence de `prompt` et de `temperature` sans vocabulaire, audio
+transmis tel quel.
+
+### Ce qui reste à prouver sur l'appareil
+
+- Ouvrir l'écran Dictionnaire et repérer toute entrée dont la forme entendue
+  est courte ou dont la cible est « up » : elle confirmerait le mécanisme 2.
+- Dicter quelques phrases ordinaires avec le relais activé et lire logcat
+  (`adb logcat -s ChuchoteDictionnaire`) : une ligne « Substitution #<id> »
+  à chaque « up » confirme le mécanisme 2 (l'identifiant se retrouve dans
+  `chuchote.db`); aucune ligne alors que « up » apparaît confirme le
+  mécanisme 1 (le mot vient du modèle, pas du dictionnaire).
+
+### Ce qui l'aurait attrapé plus tôt
+
+- Un journal des substitutions appliquées : sans lui, impossible de
+  distinguer « le modèle l'a dit » de « le dictionnaire l'a réécrit ».
+- Un test qui envoie au modèle une phrase sans rapport avec le vocabulaire
+  soufflé et vérifie qu'aucun mot du vocabulaire n'apparaît dans la sortie.
