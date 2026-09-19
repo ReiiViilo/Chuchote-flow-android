@@ -863,3 +863,94 @@ suivant republie vers le second); envoi qui lève sans tuer le fil.
   constat : un fil bloqué, trois mutations dessus; deux coordinateurs sur une
   mémoire; une cible qui change entre deux lots. Chacun tient en quinze
   lignes — c'est la revue externe qui a posé les trois questions.
+
+## 2026-09-19 — Troisième ronde : une pierre tombale élaguée avant son heure, des envois qui continuaient vers un relais coupé, un `commit()` jeté
+
+### Symptôme observable
+
+- Aucun retour d'appareil : trois défauts établis par lecture du code lors de
+  la troisième revue externe (Codex, 19 septembre 2026, `--base cf38768`,
+  sur le second correctif `fix(sync)`), verdict « needs-attention — Do not
+  ship: deletion replay can permanently lose tombstones, and sync can
+  continue after relay disablement. »
+- Attendus sur l'appareil s'ils s'étaient produits : un rejeu de démarrage
+  passant entre l'inscription d'une pierre tombale et l'effacement de sa
+  ligne (la pierre tombale est inscrite avant, depuis la ronde précédente)
+  voyait la paire encore vivante et l'élaguait — le travail de la
+  suppression ne trouvait plus rien, le relais gardait le mot; couper le
+  relais, tourner le jeton ou changer d'adresse pendant une republication en
+  plusieurs lots laissait partir les lots suivants vers l'ancien relais;
+  une écriture de préférences refusée par le disque passait pour réussie,
+  la ligne était effacée et la pierre tombale n'existait nulle part.
+
+### Surface et domaine
+
+- Rejeu des pierres tombales et republication (`DictionarySyncCoordinator`),
+  adaptateur `chuchote_sync` (`SyncPusher`), suppression d'une entrée
+  (`ChuchoteStore.supprimerEntree`).
+
+### Cause racine
+
+1. **L'élagage précédait la borne.** `rejouer` retirait de la file les
+   paires vivantes et périmées avant de ne garder que les pierres tombales
+   inscrites avant sa demande; une pierre tombale plus récente, encore
+   vivante par construction, y passait.
+2. **La cible était lue une fois, sans être revérifiée.** Lier tous les lots
+   à une cible (ronde précédente) garantissait l'empreinte, pas l'arrêt.
+3. **`prefs.edit(commit = true) { }` jette le booléen de `commit()`.**
+
+### Correctif
+
+- `rejouer` partage la file en pierres tombales inscrites avant sa demande
+  (envoyées, élaguées) et après (laissées intactes, à leur propre travail).
+- `envoyerSiToujours` : avant chaque requête d'une série, la cible captée
+  doit encore être le relais configuré; sinon la série s'arrête, l'empreinte
+  n'est pas inscrite, les pierres tombales restent en file. Un ajout, seul,
+  lit sa cible au moment de partir.
+- `SyncMemoire.ecrire` et `effacer` rendent le résultat de `commit()`;
+  `retirer` rend vrai si la pierre tombale est durable, sinon l'envoie
+  aussitôt depuis la mémoire, une seule fois, et le journalise;
+  `supprimerEntree` efface la ligne quand même (la vérité locale ne dépend
+  pas du relais) et avertit avec l'identifiant seulement. Une empreinte non
+  effacée ou non inscrite est journalisée.
+
+### Test de non-régression
+
+`DictionarySyncCoordinatorTest`, trois scénarios de plus (treize au total) :
+rejeu de démarrage demandé avant une suppression dont la ligne n'est pas
+encore effacée (la pierre tombale n'est pas élaguée et part en dernier);
+changement puis coupure du relais entre deux lots (seul le lot en vol part,
+pas d'empreinte, tout repart au démarrage suivant vers le relais configuré);
+écriture des préférences refusée (la pierre tombale part aussitôt, la
+suppression est signalée).
+
+### Constats du `code-reviewer` sur le même commit, pris dans la même ronde
+
+- `supprimerEntree` : une exception dans l'inscription de la pierre tombale
+  tuait la coroutine avant le `DELETE` — la suppression locale dépendait de
+  la comptabilité de synchronisation. Désormais `runCatching` : la ligne est
+  effacée quoi qu'il arrive, l'échec est journalisé sans contenu.
+- Le refus de `trySend` était inatteignable (le canal n'était jamais fermé,
+  `for (x in channel)` ne le ferme pas) et sa KDoc affirmait l'inverse : le
+  fil d'envoi ferme maintenant le canal à la mort de la portée, compte les
+  travaux qui ne partiront plus, et un test le fait tirer.
+- Deux tests modélisaient l'ordre d'avant (ligne effacée, puis pierre
+  tombale) : ils suivent l'ordre du magasin. L'étape « Forcer l'arrêt » du
+  plan alpha dit ce qu'elle prouve (la survie de la file) et comment lire le
+  résiduel assumé.
+- Résiduels de la réordonnance consignés dans `DATA_AND_PERSISTENCE.md` :
+  mort entre inscription et `DELETE`, `DELETE` en échec, pierre tombale
+  arrivée avant le `DELETE` — tous auto-réparés par la republication suivante.
+
+### Ce qui reste à prouver sur l'appareil
+
+- L'étape modifiée au § 6 du plan de test alpha : couper le relais ou changer
+  d'adresse entre deux lots.
+
+### Ce qui l'aurait attrapé plus tôt
+
+- Le premier constat est né du correctif précédent (pierre tombale avant la
+  suppression) : chaque réordonnancement d'écritures durables mérite de
+  rejouer tous les scénarios de rejeu avec la nouvelle fenêtre. Le troisième
+  est une aide KTX qui masque un résultat : préférer `commit()` nu partout où
+  la durabilité compte.

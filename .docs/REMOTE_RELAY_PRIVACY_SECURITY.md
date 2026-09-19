@@ -71,7 +71,10 @@ et vérifiées sur la JVM — avec le `org.json` de référence (`testImplementa
 | `POST /api/sync/dictionary` | à l'ajout d'une entrée; à sa suppression (pierre tombale `deleted=true`, inscrite en file **avant** que la ligne soit effacée); au démarrage du store, les pierres tombales encore en file puis la liste entière si son empreinte SHA-256 — liée à l'adresse du relais, effacée par toute mutation du dictionnaire — n'est pas celle que **ce** relais a déjà acceptée : un relais nouvellement configuré reçoit donc tout le dictionnaire | `heard`, `replace_with`, `deleted` — par lots de 500 entrées au plus (plafond du relais), autant de lots que nécessaire, tous adressés au relais lu au départ de la republication; l'empreinte n'est retenue que si tous les lots sont passés et qu'aucune mutation n'a couru pendant les envois |
 
 Frontières, identiques au relais de transcription : rien ne part sans relais
-configuré **et** sans consentement courant, relu dans la coroutine d'envoi.
+configuré **et** sans consentement courant, relu dans la coroutine d'envoi —
+et une série d'envois (lots d'une republication, pierres tombales d'un rejeu)
+s'arrête dès que le relais est coupé, son jeton tourné ou son adresse changée :
+la requête en vol s'achève, aucune autre ne part vers l'ancien relais.
 Tout est best-effort et hors du chemin critique : un échec (réseau, HTTP non
 `2xx`) est journalisé (`Log.w`, tag `SyncPusher`, code de diagnostic expurgé,
 jamais le contenu ni le message brut) puis oublié, la vérité locale reste

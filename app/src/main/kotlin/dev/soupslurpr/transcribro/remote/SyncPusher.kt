@@ -62,8 +62,11 @@ class SyncPusher(context: Context) {
         DictionarySyncCoordinator(
             memoire = object : SyncMemoire {
                 override fun lire(cle: String): String? = prefs.getString(cle, null)
-                override fun ecrire(cle: String, valeur: String) = prefs.edit(commit = true) { putString(cle, valeur) }
-                override fun effacer(cle: String) = prefs.edit(commit = true) { remove(cle) }
+
+                // `commit()` et son résultat, pas l'aide KTX qui le jette : une
+                // écriture refusée par le disque doit se savoir.
+                override fun ecrire(cle: String, valeur: String): Boolean = prefs.edit().putString(cle, valeur).commit()
+                override fun effacer(cle: String): Boolean = prefs.edit().remove(cle).commit()
             },
             destination = { settings.snapshot().requestTarget },
             envoyer = { cible, path, payload, label, readTimeoutMs -> send(cible, path, payload, label, readTimeoutMs) },
@@ -103,17 +106,19 @@ class SyncPusher(context: Context) {
     /**
      * Publie la pierre tombale d'un mot supprimé, pour que l'autre appareil
      * cesse de l'appliquer. Mise en file d'abord, envoi ensuite : un échec la
-     * laisse en attente du prochain démarrage.
+     * laisse en attente du prochain démarrage. Faux seulement si la pierre
+     * tombale n'a pas pu être inscrite dans `chuchote_sync` — elle part alors
+     * aussitôt, une seule fois, et l'appelant décide de sa suppression locale.
      */
-    fun pushDictionaryTombstone(entendu: String, remplacerPar: String) {
+    fun pushDictionaryTombstone(entendu: String, remplacerPar: String): Boolean {
         val mot = entendu.trim()
-        if (mot.isEmpty()) return
+        if (mot.isEmpty()) return true
         // Sans relais jamais configuré, rien ne partira jamais : ne pas
         // conserver la trace d'une suppression que personne n'attend. Le
         // consentement, lui, se relit à l'envoi — une révocation ne vide pas
         // la file.
-        if (!synchronisationDejaConfiguree()) return
-        coordinateur.retirer(mot to remplacerPar.trim())
+        if (!synchronisationDejaConfiguree()) return true
+        return coordinateur.retirer(mot to remplacerPar.trim())
     }
 
     /**

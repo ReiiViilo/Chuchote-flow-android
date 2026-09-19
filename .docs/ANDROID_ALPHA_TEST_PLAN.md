@@ -188,16 +188,25 @@ Synchronisation vers le relais (`/api/sync/*`), sur le même serveur de test :
   le dernier lot, `logcat` montre « Mot #ajout synchronisé » **puis** « Mot
   #retrait synchronisé » en dernier, et un `GET /api/sync/dictionary` ne
   renvoie plus l'entrée;
-- [ ] supprimer une entrée puis tuer le processus aussitôt (« Forcer l'arrêt »
-  dans les réglages système, dans la seconde) : au lancement suivant, la
-  pierre tombale part (« Mot #retrait synchronisé ») et l'entrée n'est ni
-  dans le Dictionnaire ni renvoyée par le `GET`;
+- [ ] relais **coupé**, supprimer une entrée puis tuer le processus (« Forcer
+  l'arrêt » dans les réglages système) : au lancement suivant, relais rétabli,
+  la pierre tombale part (« Mot #retrait synchronisé ») et l'entrée n'est ni
+  dans le Dictionnaire ni renvoyée par le `GET`. Cette étape prouve que la
+  file survit à la mort du processus, pas l'ordre inscription-avant-`DELETE`
+  (la fenêtre entre les deux dure quelques millisecondes, hors de portée d'un
+  arrêt manuel; c'est le test JVM `un rejeu de demarrage n elague pas la
+  pierre tombale d une suppression en cours` qui l'établit). Si l'entrée est
+  encore dans le Dictionnaire au lancement suivant, le processus est mort
+  entre l'inscription et le `DELETE` : résiduel assumé, l'entrée est
+  republiée après sa pierre tombale et reste vivante des deux côtés;
 - [ ] changer l'adresse du relais pour un second serveur de test : au
   démarrage suivant, tout le dictionnaire est republié vers lui; revenir à la
   première adresse : republié aussi, l'empreinte étant liée à l'adresse; avec
-  la fixture de plus de 500 entrées, changer l'adresse **entre deux lots** de
-  la republication : les deux lots atteignent le premier serveur (journal du
-  relais), et le démarrage suivant republie tout vers le second;
+  la fixture de plus de 500 entrées, changer l'adresse — ou couper le relais —
+  **entre deux lots** de la republication : seul le lot déjà en vol atteint le
+  premier serveur (journal du relais), `logcat` montre « Relais changé ou
+  coupé pendant les envois : série arrêtée », et le démarrage suivant republie
+  tout vers le relais alors configuré;
 - [ ] retirer le consentement : aucun `POST /api/sync/*` ne part, même pour
   une pierre tombale déjà en file;
 - [ ] confirmer que ces requêtes correspondent exactement à la divulgation de

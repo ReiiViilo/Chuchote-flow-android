@@ -519,9 +519,21 @@ class ChuchoteStore private constructor(
             // meurt entre les deux, la suppression n'a pas eu lieu et le rejeu
             // du démarrage écarte une pierre tombale dont le mot est encore
             // vivant; dans l'ordre inverse, une suppression faite mais jamais
-            // annoncée laisserait le mot au relais pour toujours.
+            // annoncée laisserait le mot au relais pour toujours. Si
+            // l'inscription elle-même échoue (disque) ou lève, la suppression
+            // locale a lieu quand même — la vérité locale ne dépend pas du
+            // relais — et la pierre tombale n'a qu'un envoi immédiat, ou rien,
+            // pour arriver.
             if (entree != null) {
-                syncPusher?.pushDictionaryTombstone(entree.entendu, entree.remplacerPar)
+                val durable = runCatching {
+                    syncPusher?.pushDictionaryTombstone(entree.entendu, entree.remplacerPar) ?: true
+                }.getOrElse { e ->
+                    Log.w(TAG_DICTIONNAIRE, "Pierre tombale #${entree.id} non inscrite (${e.javaClass.simpleName})")
+                    false
+                }
+                if (!durable) {
+                    Log.w(TAG_DICTIONNAIRE, "Pierre tombale #${entree.id} non inscrite : le relais peut garder ce mot")
+                }
             }
             db.writableDatabase.delete("dictionnaire", "id = ?", arrayOf(id.toString()))
             rechargerDictionnaire()

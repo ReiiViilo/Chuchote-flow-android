@@ -15,8 +15,12 @@ import org.json.JSONObject
  */
 internal interface SyncMemoire {
     fun lire(cle: String): String?
-    fun ecrire(cle: String, valeur: String)
-    fun effacer(cle: String)
+
+    /** Vrai si la valeur est durable — sur l'appareil, le résultat de `commit()`. */
+    fun ecrire(cle: String, valeur: String): Boolean
+
+    /** Vrai si l'effacement est durable. */
+    fun effacer(cle: String): Boolean
 }
 
 /**
@@ -64,9 +68,18 @@ internal interface SyncMemoire {
  * pas de file, c'est la republication suivante qui le rattrape — et une
  * republication n'enregistre la sienne que si aucune mutation ne s'est
  * glissée pendant ses envois. Ses lots visent tous le relais lu à son départ,
- * même si l'adresse change entre deux : l'empreinte dit vrai de ce relais-là,
- * et le nouveau, qui n'a rien accepté, sera servi au démarrage suivant.
- * Changer de relais change l'empreinte, donc republie.
+ * et **s'arrêtent** si ce relais n'est plus celui configuré entre deux
+ * requêtes — coupé, jeton tourné, adresse changée : rien de plus ne part vers
+ * l'ancien, l'empreinte n'est pas inscrite, et le nouveau, qui n'a rien
+ * accepté, sera servi au démarrage suivant. Même arrêt pour une série de
+ * pierres tombales, qui restent en file. Changer de relais change
+ * l'empreinte, donc republie.
+ *
+ * Une pierre tombale qui n'a pas pu être inscrite — l'écriture des
+ * préférences a échoué — est envoyée aussitôt, une seule fois, depuis la
+ * mémoire : l'appelant est prévenu, la suppression locale a lieu quand même
+ * (la vérité locale ne dépend pas du relais), et si cet envoi échoue le
+ * relais peut garder le mot.
  */
 internal class DictionarySyncCoordinator(
     private val memoire: SyncMemoire,
@@ -101,14 +114,24 @@ internal class DictionarySyncCoordinator(
 
     init {
         scope.launch {
-            for (travail in travaux) {
-                try {
-                    travail()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    journal("Travail de synchronisation abandonné (${e.javaClass.simpleName})")
+            try {
+                for (travail in travaux) {
+                    try {
+                        travail()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        journal("Travail de synchronisation abandonné (${e.javaClass.simpleName})")
+                    }
                 }
+            } finally {
+                // La portée est annulée : fermer le canal, pour qu'une demande
+                // ultérieure soit refusée et journalisée plutôt qu'acceptée
+                // dans le vide, et compter ce qui ne partira plus.
+                travaux.close()
+                var abandonnes = 0
+                while (travaux.tryReceive().isSuccess) abandonnes++
+                if (abandonnes > 0) journal("Fil d'envoi arrêté : $abandonnes travail(aux) en file ne partiront pas")
             }
         }
     }
@@ -130,15 +153,30 @@ internal class DictionarySyncCoordinator(
     /**
      * Un mot supprimé : mis en file d'abord, envoyé ensuite, à son tour — et
      * seulement lui, pas une pierre tombale inscrite après cette demande.
+     * Vrai si la pierre tombale est durable; faux si elle n'a pas pu être
+     * inscrite, auquel cas elle part aussitôt, une seule fois.
      */
-    fun retirer(paire: Pair<String, String>) {
+    fun retirer(paire: Pair<String, String>): Boolean {
         val borne = synchronized(verrou) {
-            ecrireFile(PendingTombstones.ajouter(lireFile(), paire, horloge()))
             invaliderEmpreinte()
-            inscriptions[paire] = generation
-            generation
+            if (!ecrireFile(PendingTombstones.ajouter(lireFile(), paire, horloge()))) {
+                inscriptions.remove(paire)
+                null
+            } else {
+                inscriptions[paire] = generation
+                generation
+            }
+        }
+        if (borne == null) {
+            journal("Pierre tombale non inscrite (écriture des préférences refusée) : envoi immédiat seulement")
+            demander {
+                val cible = destination() ?: return@demander
+                envoyer(cible, DICTIONARY_PATH, SyncPayloads.dictionaryTombstone(paire.first, paire.second), "Mot #retrait", SyncTimeouts.READ_TIMEOUT_MS)
+            }
+            return false
         }
         demander { rejouer(borne) { emptySet() } }
+        return true
     }
 
     /**
@@ -164,10 +202,10 @@ internal class DictionarySyncCoordinator(
     }
 
     /**
-     * Met un travail en file. Le canal n'est jamais fermé et sa capacité est
-     * illimitée : un refus ne peut venir que d'une portée déjà annulée, auquel
-     * cas le travail ne partira pas — sa trace durable, elle, est déjà
-     * inscrite, et le démarrage suivant le rattrape.
+     * Met un travail en file. La capacité est illimitée et le canal n'est
+     * fermé que par la mort de la portée : un refus signifie que le fil
+     * d'envoi est arrêté et que le travail ne partira pas — sa trace durable,
+     * elle, est déjà inscrite, et le démarrage suivant le rattrape.
      */
     private fun demander(travail: suspend () -> Unit) {
         if (travaux.trySend(travail).isFailure) {
@@ -192,11 +230,33 @@ internal class DictionarySyncCoordinator(
         if (dejaAcceptee) return
         lots.forEachIndexed { index, lot ->
             // Empreinte non enregistrée : tout repartira au prochain démarrage.
-            if (!envoyer(cible, DICTIONARY_PATH, lot, "lot ${index + 1}/${lots.size} du dictionnaire", SyncTimeouts.BATCH_READ_TIMEOUT_MS)) return
+            if (!envoyerSiToujours(cible, DICTIONARY_PATH, lot, "lot ${index + 1}/${lots.size} du dictionnaire", SyncTimeouts.BATCH_READ_TIMEOUT_MS)) return
         }
         synchronized(verrou) {
-            if (generation == depart) memoire.ecrire(KEY_DICTIONARY_SIGNATURE, signature)
+            if (generation == depart && !memoire.ecrire(KEY_DICTIONARY_SIGNATURE, signature)) {
+                journal("Empreinte non inscrite : le dictionnaire repartira au prochain démarrage")
+            }
         }
+    }
+
+    /**
+     * Un envoi vers [cible], seulement si c'est encore le relais configuré :
+     * une série d'envois — lots d'une republication, pierres tombales d'un
+     * rejeu — s'arrête dès que le relais est coupé, son jeton tourné ou son
+     * adresse changée. Ce qui était déjà en vol part; rien de plus.
+     */
+    private suspend fun envoyerSiToujours(
+        cible: RemoteRequestTarget,
+        path: String,
+        payload: JSONObject,
+        label: String,
+        readTimeoutMs: Int,
+    ): Boolean {
+        if (destination() != cible) {
+            journal("Relais changé ou coupé pendant les envois : série arrêtée")
+            return false
+        }
+        return envoyer(cible, path, payload, label, readTimeoutMs)
     }
 
     /**
@@ -215,18 +275,25 @@ internal class DictionarySyncCoordinator(
         val maintenant = horloge()
         val aRejouer = synchronized(verrou) {
             val enAttente = lireFile()
+            // Les pierres tombales inscrites après la demande de ce rejeu ne
+            // sont ni envoyées ni élaguées : l'une d'elles peut appartenir à
+            // une suppression dont la ligne n'est pas encore effacée — la
+            // pierre tombale est inscrite avant —, donc dont la paire est
+            // encore vivante; l'élaguer maintenant la perdrait pour toujours.
+            // Son propre travail, derrière celui-ci, la prendra.
+            val (anciennes, nouvelles) = enAttente.partition { (inscriptions[it.paire] ?: 0L) <= borne }
             // Le dictionnaire vivant est lu ici, sous le verrou : une mutation
             // est soit entièrement avant (déjà hors du vivant et en file), soit
             // entièrement après (son travail suivra celui-ci).
-            val gardees = PendingTombstones.aRejouer(enAttente, exclure(), maintenant)
-            if (gardees.size != enAttente.size) ecrireFile(gardees)
-            gardees.filter { (inscriptions[it.paire] ?: 0L) <= borne }
+            val gardees = PendingTombstones.aRejouer(anciennes, exclure(), maintenant)
+            if (gardees.size != anciennes.size) ecrireFile(enAttente.filter { it in gardees || it in nouvelles })
+            gardees
         }
         if (aRejouer.isEmpty()) return
         val cible = destination() ?: return
         val envoyees = mutableListOf<TombaleEnAttente>()
         for (tombale in aRejouer) {
-            val ok = envoyer(
+            val ok = envoyerSiToujours(
                 cible,
                 DICTIONARY_PATH,
                 SyncPayloads.dictionaryTombstone(tombale.entendu, tombale.remplacerPar),
@@ -254,17 +321,23 @@ internal class DictionarySyncCoordinator(
             emptyList()
         }
 
-    /** Sous [verrou]. Les inscriptions suivent la file : une paire sortie n'a plus de génération. */
-    private fun ecrireFile(file: List<TombaleEnAttente>) {
-        memoire.ecrire(KEY_PENDING_TOMBSTONES, PendingTombstones.encode(file))
+    /**
+     * Sous [verrou]. Vrai si la file est durable. Les inscriptions suivent
+     * la file : une paire sortie n'a plus de génération.
+     */
+    private fun ecrireFile(file: List<TombaleEnAttente>): Boolean {
+        val durable = memoire.ecrire(KEY_PENDING_TOMBSTONES, PendingTombstones.encode(file))
         val presentes = file.map { it.paire }.toSet()
         inscriptions.keys.retainAll(presentes)
+        return durable
     }
 
     /** Sous [verrou]. Le dictionnaire vient de changer : ce que le relais a accepté ne le décrit plus. */
     private fun invaliderEmpreinte() {
         generation++
-        if (memoire.lire(KEY_DICTIONARY_SIGNATURE) != null) memoire.effacer(KEY_DICTIONARY_SIGNATURE)
+        if (memoire.lire(KEY_DICTIONARY_SIGNATURE) != null && !memoire.effacer(KEY_DICTIONARY_SIGNATURE)) {
+            journal("Empreinte non effacée : une republication peut être sautée au prochain démarrage")
+        }
     }
 
     internal companion object {
