@@ -179,7 +179,11 @@ class DictionarySyncCoordinatorTest {
             relais.recus,
         )
         assertTrue(memoire.file.isEmpty())
-        assertNotNull(memoire.empreinte)
+        // Pas d'empreinte : la pierre tombale de wapiti était encore en file
+        // quand le lot s'est achevé. Le lot était pourtant juste; la règle ne
+        // le sait pas et préfère une republication de plus au démarrage
+        // suivant (voir « un rejeu de demarrage n elague pas… »).
+        assertNull(memoire.empreinte)
     }
 
     @Test
@@ -381,6 +385,105 @@ class DictionarySyncCoordinatorTest {
             relais.recus,
         )
         assertTrue(memoire.file.isEmpty())
+        // L'empreinte n'est pas inscrite : ce lot décrivait « papa » vivant
+        // pendant que sa suppression était en suspens. Si le processus meurt
+        // avant que la ligne soit effacée, le démarrage suivant republie
+        // « papa » — vivant des deux côtés, plutôt que mort au relais et
+        // vivant ici sans rien pour les réconcilier.
+        assertNull(memoire.empreinte)
+        val avantLaMort = listOf(entree(1, "oscar", "Oscar"), entree(2, "papa", "Papa"))
+        val second = coordinateur(memoire, relais)
+        second.synchroniserAuDemarrage { avantLaMort }
+        second.attendre()
+        assertEquals("lot 1/1 du dictionnaire[oscar→Oscar:vivant papa→Papa:vivant]", relais.recus.last())
+        assertNotNull(memoire.empreinte)
+    }
+
+    @Test
+    fun `changer puis couper le relais entre deux pierres tombales arrete la serie et garde la file`() = runBlocking {
+        val memoire = Memoire()
+        val relais = Relais()
+        val cible = AtomicReference<String?>("https://a.test")
+        val coordinateur = coordinateur(memoire, relais) { cible.get() }
+
+        relais.enPanne = true
+        coordinateur.retirer("victor" to "Victor")
+        coordinateur.retirer("whisky" to "Whisky")
+        coordinateur.attendre()
+        assertEquals(listOf("victor" to "Victor", "whisky" to "Whisky"), memoire.file.map { it.paire })
+
+        // Relais revenu : le rejeu envoie « victor », l'adresse change pendant
+        // qu'il est en vol — « whisky » ne part ni vers A ni vers B.
+        relais.enPanne = false
+        var porte = relais.bloquerLeProchainEnvoi()
+        coordinateur.synchroniserAuDemarrage { emptyList() }
+        withTimeout(10_000) { porte.first.await() }
+        cible.set("https://b.test")
+        porte.second.complete(Unit)
+        coordinateur.attendre()
+        assertEquals(listOf("Mot #retrait[victor→Victor:retrait]"), relais.recus)
+        assertEquals(listOf("https://a.test"), relais.cibles)
+        assertEquals(listOf("whisky" to "Whisky"), memoire.file.map { it.paire })
+        assertNull(memoire.empreinte)
+
+        // Relais coupé pendant qu'un rejeu part : « whisky », déjà en vol,
+        // arrive; « xray », derrière lui, ne part pas et la file le garde.
+        // (« xray » est inscrit relais en panne, sinon il partirait aussitôt.)
+        relais.enPanne = true
+        coordinateur.retirer("xray" to "Xray")
+        coordinateur.attendre()
+        assertEquals(listOf("whisky" to "Whisky", "xray" to "Xray"), memoire.file.map { it.paire })
+        relais.enPanne = false
+        porte = relais.bloquerLeProchainEnvoi()
+        coordinateur.synchroniserAuDemarrage { emptyList() }
+        withTimeout(10_000) { porte.first.await() }
+        cible.set(null)
+        porte.second.complete(Unit)
+        coordinateur.attendre()
+        assertEquals(
+            listOf("Mot #retrait[victor→Victor:retrait]", "Mot #retrait[whisky→Whisky:retrait]"),
+            relais.recus,
+        )
+        assertEquals(listOf("xray" to "Xray"), memoire.file.map { it.paire })
+
+        // B, configuré de nouveau, reçoit ce qui restait.
+        cible.set("https://b.test")
+        coordinateur.synchroniserAuDemarrage { emptyList() }
+        coordinateur.attendre()
+        assertTrue(memoire.file.isEmpty())
+        assertEquals(listOf("https://a.test", "https://b.test", "https://b.test"), relais.cibles)
+    }
+
+    @Test
+    fun `un mot reappris dont la pierre tombale n a pu etre retiree de la file n est pas rejoue`() = runBlocking {
+        val memoire = Memoire()
+        val relais = Relais()
+        val journal = CopyOnWriteArrayList<String>()
+        val coordinateur = DictionarySyncCoordinator(
+            memoire = memoire,
+            destination = { RemoteRequestTarget(baseUrl = "https://relais.test", token = "jeton") },
+            envoyer = { cible, path, payload, label, timeout -> relais.envoyer(cible, path, payload, label, timeout) },
+            scope = scope,
+            journal = { journal += it },
+        )
+
+        relais.enPanne = true
+        coordinateur.retirer("yankee" to "Yankee") // en file, l'envoi échoue
+        coordinateur.attendre()
+        memoire.ecritureRefusee = true
+        coordinateur.ajouter("yankee" to "Yankee") // réappris : la file ne peut pas être réécrite
+        coordinateur.attendre()
+        assertEquals(listOf("yankee" to "Yankee"), memoire.file.map { it.paire })
+        assertTrue(journal.any { it.startsWith("Pierre tombale d'un mot réappris non retirée") })
+
+        // Disque et relais revenus : une autre suppression rejoue la file —
+        // sans la pierre tombale du mot vivant, qui en est élaguée.
+        memoire.ecritureRefusee = false
+        relais.enPanne = false
+        coordinateur.retirer("zoulou" to "Zoulou")
+        coordinateur.attendre()
+        assertEquals(listOf("Mot #retrait[zoulou→Zoulou:retrait]"), relais.recus)
+        assertTrue(memoire.file.isEmpty())
     }
 
     @Test
@@ -455,6 +558,7 @@ class DictionarySyncCoordinatorTest {
         assertEquals(listOf("uniform" to "Uniform"), memoire.file.map { it.paire })
         assertTrue(journal.any { it.startsWith("Fil d'envoi arrêté : 1 travail(aux)") })
         assertTrue(journal.any { it == "Travail de synchronisation refusé : fil d'envoi arrêté" })
+        coordinateur.attendre() // ne pend pas : plus de fil, rien à attendre
     }
 
     @Test

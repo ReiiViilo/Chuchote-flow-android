@@ -514,6 +514,13 @@ class ChuchoteStore private constructor(
             // Sans elle, l'autre appareil continuerait d'appliquer un mot
             // qu'on vient de retirer ici.
             val entree = _dictionnaire.value.firstOrNull { it.id == id }
+            // Seulement pour la dernière ligne de sa paire : la table admet
+            // les doublons, la clé du relais est la paire.
+            val paire = PierreTombale.aAnnoncer(_dictionnaire.value, id)
+            if (paire == null) {
+                val motif = if (entree == null) "ligne inconnue du dictionnaire chargé" else "une autre ligne porte la même paire"
+                Log.w(TAG_DICTIONNAIRE, "Suppression #$id : $motif, rien n'est annoncé au relais")
+            }
             // La pierre tombale est inscrite dans `chuchote_sync` — sur ce fil,
             // avant de revenir — **avant** d'effacer la ligne : si le processus
             // meurt entre les deux, la suppression n'a pas eu lieu et le rejeu
@@ -524,15 +531,17 @@ class ChuchoteStore private constructor(
             // locale a lieu quand même — la vérité locale ne dépend pas du
             // relais — et la pierre tombale n'a qu'un envoi immédiat, ou rien,
             // pour arriver.
-            if (entree != null) {
-                val durable = runCatching {
-                    syncPusher?.pushDictionaryTombstone(entree.entendu, entree.remplacerPar) ?: true
-                }.getOrElse { e ->
-                    Log.w(TAG_DICTIONNAIRE, "Pierre tombale #${entree.id} non inscrite (${e.javaClass.simpleName})")
+            if (paire != null) {
+                val durable = try {
+                    syncPusher?.pushDictionaryTombstone(paire.first, paire.second) ?: true
+                } catch (e: CancellationException) {
+                    throw e // jamais avalée : rien ne s'efface dans une coroutine annulée
+                } catch (e: Exception) {
+                    Log.w(TAG_DICTIONNAIRE, "Pierre tombale #$id non inscrite (${e.javaClass.simpleName})")
                     false
                 }
                 if (!durable) {
-                    Log.w(TAG_DICTIONNAIRE, "Pierre tombale #${entree.id} non inscrite : le relais peut garder ce mot")
+                    Log.w(TAG_DICTIONNAIRE, "Pierre tombale #$id non inscrite : le relais peut garder ce mot")
                 }
             }
             db.writableDatabase.delete("dictionnaire", "id = ?", arrayOf(id.toString()))

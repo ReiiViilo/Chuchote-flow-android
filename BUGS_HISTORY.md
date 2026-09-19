@@ -954,3 +954,113 @@ suppression est signalée).
   rejouer tous les scénarios de rejeu avec la nouvelle fenêtre. Le troisième
   est une aide KTX qui masque un résultat : préférer `commit()` nu partout où
   la durabilité compte.
+
+## 2026-09-19 — Quatrième ronde : un délai plus court que le relais, une empreinte posée pendant une suppression, un doublon qui effaçait la paire
+
+### Symptôme observable
+
+- Aucun retour d'appareil : trois défauts établis par lecture du code lors de
+  la quatrième revue externe (Codex, 19 septembre 2026, `--base cf38768`,
+  sur le troisième correctif `fix(sync)`), verdict « needs-attention — Do not
+  ship: dictionary sync can resurrect deleted entries after timeouts and
+  leave persistent divergence after interrupted deletions. » — et, sur le
+  même commit, la revue `code-reviewer` (verdict `decision_required`, voir
+  plus bas).
+- Attendus sur l'appareil s'ils s'étaient produits : un ajout expiré côté
+  client après 15 s alors que le relais, qui s'accorde 30 s, l'écrivait
+  encore, suivi d'une pierre tombale partie aussitôt — le mot ressuscitait
+  au relais et rien ne le réparait; une republication de démarrage
+  s'achevant pendant qu'une suppression était en suspens inscrivait une
+  empreinte, puis une mort du processus avant le `DELETE` laissait le mot
+  vivant ici et mort au relais, empreinte à l'appui, sans republication
+  suivante; supprimer l'un de deux doublons (la table admet les doublons)
+  posait une pierre tombale pour la paire entière, que l'appareil
+  appliquait encore.
+
+### Surface et domaine
+
+- Délais de transport (`SyncTimeouts`), empreinte et file
+  (`DictionarySyncCoordinator`), suppression d'une entrée
+  (`ChuchoteStore.supprimerEntree`, nouvel objet `PierreTombale`).
+
+### Cause racine
+
+1. **Le fil unique ordonne les requêtes, pas les écritures d'un relais en
+   retard.** Un délai de 15 s pour une seule entrée, contre 30 s de
+   `maxDuration` : le client passait à la suite pendant que le relais
+   écrivait encore.
+2. **La génération avance à l'inscription de la pierre tombale, pas au
+   `DELETE`.** Une republication qui lit le dictionnaire entre les deux voit
+   un état que l'empreinte tient ensuite pour accepté.
+3. **La clé du relais est la paire; celle de la table est `id`.**
+
+### Correctif
+
+- `READ_TIMEOUT_MS` et `BATCH_READ_TIMEOUT_MS` dépassent tous deux
+  `RELAY_MAX_DURATION_MS` (35 s contre 30 s), avec un test de contrat. Reste
+  la fenêtre d'une requête SQL déjà partie quand la fonction est tuée —
+  quelques millisecondes —, à fermer par des versions de mutation côté
+  relais (décision ouverte, D-006 du desktop).
+- L'empreinte n'est inscrite que si aucune pierre tombale n'est en file en
+  fin de republication : sans empreinte, le démarrage suivant republie, et
+  une mort avant le `DELETE` laisse le mot vivant des deux côtés.
+- `PierreTombale.aAnnoncer` : la pierre tombale n'est posée que pour la
+  dernière ligne d'une paire; un doublon supprimé, ou une ligne inconnue,
+  est journalisé (identifiant seulement) et n'annonce rien.
+
+### Constats du `code-reviewer` sur le même commit, pris dans la même ronde
+
+- L'arrêt d'une série de pierres tombales au changement de relais était
+  documenté et jamais testé (le mutant `envoyer` à la place de
+  `envoyerSiToujours` survivait) : testé, relais changé puis coupé entre
+  deux pierres tombales.
+- Les écritures refusées de la file n'étaient honorées que dans `retirer` :
+  `inscriptions` ne suit plus que la file durable, chaque refus est
+  journalisé, et un mot réappris dont la pierre tombale n'a pas pu être
+  retirée est tenu pour vivant par tout rejeu (`reapprises`) jusqu'à une
+  écriture réussie — testé.
+- `runCatching` avalait `CancellationException` avant un `DELETE` :
+  relancée.
+- `attendreLaFin` pendait sur une portée morte : `demander` rend son succès,
+  l'attente se termine.
+- Une ligne inconnue supprimée sans trace : journalisée.
+- **Non corrigé, sur décision d'Olivier** (`decision_required` : deuxième
+  correctif autonome de la famille « rejeu qui élague une pierre tombale
+  vivante », règle du checkpoint avant un troisième) : la borne d'un rejeu
+  est lue sous le verrou, la mise en file hors de lui — un rejeu demandé
+  entre les deux verrait une pierre tombale à sa propre génération et
+  l'élaguerait si la ligne n'est pas encore effacée. Inatteignable tant que
+  `synchroniserAuDemarrage` n'a qu'un appelant; correctif de trois lignes
+  (`demander` sous le verrou) ou boîte d'envoi transactionnelle. Les
+  documents disent désormais exactement ce qui tient.
+- Le message du commit `90be9e2` annonce « quatre scénarios de plus » :
+  trois tests nouveaux et un renommé, l'entrée précédente de ce registre a
+  le bon compte.
+
+### Test de non-régression
+
+`SyncTimeoutsTest` (contrat des délais); `DictionarySyncCoordinatorTest`,
+seize scénarios : « un rejeu de demarrage n elague pas … » prolongé
+(empreinte absente, puis le démarrage suivant republie le mot), « changer
+puis couper le relais entre deux pierres tombales … », « un mot reappris
+dont la pierre tombale n a pu etre retiree … », attente sur portée morte;
+`PierreTombaleTest` (trois scénarios).
+
+### Ce qui reste à prouver sur l'appareil
+
+- L'étape ajoutée au § 6 du plan de test alpha : supprimer l'un de deux
+  doublons, puis l'autre.
+
+### Ce qui l'aurait attrapé plus tôt
+
+- Le premier constat réutilise un raisonnement déjà présent pour les lots
+  (« on attend un peu au-delà ») sans l'avoir appliqué aux envois unitaires :
+  une règle de transport vaut pour toutes les requêtes d'une même route. Le
+  second est le troisième effet de la réordonnance pierre-tombale-puis-
+  `DELETE` : chaque état intermédiaire nouveau doit être passé au crible de
+  « le processus meurt ici ». Le troisième est un écart de clé entre deux
+  magasins : à vérifier à chaque frontière. Quant à la famille laissée à la
+  décision, trois rondes de findings sur du code écrit dans la boucle sont
+  le signal que la conception (pierre tombale dans les préférences, ligne
+  dans SQLite, aucun ordre atomique entre les deux) est en cause, pas la
+  vigilance.

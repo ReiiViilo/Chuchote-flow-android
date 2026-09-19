@@ -195,7 +195,9 @@ Synchronisation vers le relais (`/api/sync/*`), sur le même serveur de test :
   file survit à la mort du processus, pas l'ordre inscription-avant-`DELETE`
   (la fenêtre entre les deux dure quelques millisecondes, hors de portée d'un
   arrêt manuel; c'est le test JVM `un rejeu de demarrage n elague pas la
-  pierre tombale d une suppression en cours` qui l'établit). Si l'entrée est
+  pierre tombale d une suppression en cours` qui en établit le cas général —
+  pierre tombale inscrite après la demande du rejeu; la frontière d'égalité
+  reste ouverte, voir `DATA_AND_PERSISTENCE.md`). Si l'entrée est
   encore dans le Dictionnaire au lancement suivant, le processus est mort
   entre l'inscription et le `DELETE` : résiduel assumé, l'entrée est
   republiée après sa pierre tombale et reste vivante des deux côtés;
@@ -207,6 +209,10 @@ Synchronisation vers le relais (`/api/sync/*`), sur le même serveur de test :
   premier serveur (journal du relais), `logcat` montre « Relais changé ou
   coupé pendant les envois : série arrêtée », et le démarrage suivant republie
   tout vers le relais alors configuré;
+- [ ] ajouter deux fois la même paire à la main, puis supprimer l'une des
+  deux lignes : aucun « Mot #retrait » ne part et le `GET` renvoie toujours
+  la paire; supprimer la seconde : la pierre tombale part et le `GET` ne la
+  renvoie plus;
 - [ ] retirer le consentement : aucun `POST /api/sync/*` ne part, même pour
   une pierre tombale déjà en file;
 - [ ] confirmer que ces requêtes correspondent exactement à la divulgation de

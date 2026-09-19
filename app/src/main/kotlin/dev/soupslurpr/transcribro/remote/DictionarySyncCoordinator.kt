@@ -67,7 +67,12 @@ internal interface SyncMemoire {
  * l'efface avant même de tenter son envoi — un ajout manqué hors ligne n'a
  * pas de file, c'est la republication suivante qui le rattrape — et une
  * republication n'enregistre la sienne que si aucune mutation ne s'est
- * glissée pendant ses envois. Ses lots visent tous le relais lu à son départ,
+ * glissée pendant ses envois **et** qu'aucune pierre tombale n'est en file :
+ * une suppression en suspens (ligne pas encore effacée, envoi pas encore
+ * passé) n'est pas décrite par ce qui vient d'être publié, et une empreinte
+ * posée quand même laisserait, après une mort du processus avant le `DELETE`,
+ * le mot vivant ici et mort au relais sans rien pour les réconcilier — sans
+ * empreinte, le démarrage suivant republie. Ses lots visent tous le relais lu à son départ,
  * et **s'arrêtent** si ce relais n'est plus celui configuré entre deux
  * requêtes — coupé, jeton tourné, adresse changée : rien de plus ne part vers
  * l'ancien, l'empreinte n'est pas inscrite, et le nouveau, qui n'a rien
@@ -108,7 +113,14 @@ internal class DictionarySyncCoordinator(
     // Sous [verrou] : pour chaque paire en file, la génération à laquelle sa
     // pierre tombale a été inscrite dans ce processus. Une pierre tombale
     // héritée d'un processus précédent n'y figure pas et part toujours.
+    // Suit la file **durable** : une écriture refusée ne la modifie pas.
     private val inscriptions = mutableMapOf<Pair<String, String>, Long>()
+
+    // Sous [verrou] : les paires réapprises dont la pierre tombale n'a pas pu
+    // être retirée de la file (écriture refusée). Tout rejeu les tient pour
+    // vivantes — elles ne partent pas —, jusqu'à ce qu'une écriture de la
+    // file réussisse sans elles.
+    private val reapprises = mutableSetOf<Pair<String, String>>()
 
     private val travaux = Channel<suspend () -> Unit>(Channel.UNLIMITED)
 
@@ -141,7 +153,10 @@ internal class DictionarySyncCoordinator(
         synchronized(verrou) {
             val enAttente = lireFile()
             val sans = PendingTombstones.retirer(enAttente, paire)
-            if (sans.size != enAttente.size) ecrireFile(sans)
+            if (sans.size != enAttente.size && !ecrireFile(sans)) {
+                reapprises += paire
+                journal("Pierre tombale d'un mot réappris non retirée de la file (écriture refusée) : tenue pour vivante")
+            }
             invaliderEmpreinte()
         }
         demander {
@@ -159,6 +174,7 @@ internal class DictionarySyncCoordinator(
     fun retirer(paire: Pair<String, String>): Boolean {
         val borne = synchronized(verrou) {
             invaliderEmpreinte()
+            reapprises -= paire // supprimé de nouveau : sa pierre tombale compte
             if (!ecrireFile(PendingTombstones.ajouter(lireFile(), paire, horloge()))) {
                 inscriptions.remove(paire)
                 null
@@ -194,23 +210,26 @@ internal class DictionarySyncCoordinator(
         }
     }
 
-    /** Attend que tout ce qui a été demandé jusqu'ici soit parti ou ait échoué (tests). */
+    /**
+     * Attend que tout ce qui a été demandé jusqu'ici soit parti ou ait échoué
+     * — ou n'ait plus de fil pour partir (tests).
+     */
     internal suspend fun attendreLaFin() {
         val fin = CompletableDeferred<Unit>()
-        demander { fin.complete(Unit) }
+        if (!demander { fin.complete(Unit) }) fin.complete(Unit)
         fin.await()
     }
 
     /**
      * Met un travail en file. La capacité est illimitée et le canal n'est
-     * fermé que par la mort de la portée : un refus signifie que le fil
-     * d'envoi est arrêté et que le travail ne partira pas — sa trace durable,
-     * elle, est déjà inscrite, et le démarrage suivant le rattrape.
+     * fermé que par la mort de la portée : un refus (faux) signifie que le
+     * fil d'envoi est arrêté et que le travail ne partira pas — sa trace
+     * durable, elle, est déjà inscrite, et le démarrage suivant le rattrape.
      */
-    private fun demander(travail: suspend () -> Unit) {
-        if (travaux.trySend(travail).isFailure) {
-            journal("Travail de synchronisation refusé : fil d'envoi arrêté")
-        }
+    private fun demander(travail: suspend () -> Unit): Boolean {
+        val accepte = travaux.trySend(travail).isSuccess
+        if (!accepte) journal("Travail de synchronisation refusé : fil d'envoi arrêté")
+        return accepte
     }
 
     private suspend fun republierSiChange(dictionnaire: () -> List<EntreeDictionnaire>) {
@@ -233,7 +252,11 @@ internal class DictionarySyncCoordinator(
             if (!envoyerSiToujours(cible, DICTIONARY_PATH, lot, "lot ${index + 1}/${lots.size} du dictionnaire", SyncTimeouts.BATCH_READ_TIMEOUT_MS)) return
         }
         synchronized(verrou) {
-            if (generation == depart && !memoire.ecrire(KEY_DICTIONARY_SIGNATURE, signature)) {
+            // Ni mutation pendant les envois, ni pierre tombale en file : sinon
+            // ce que le relais a accepté ne décrit pas le dictionnaire, et
+            // le démarrage suivant doit republier.
+            if (generation != depart || lireFile().isNotEmpty()) return
+            if (!memoire.ecrire(KEY_DICTIONARY_SIGNATURE, signature)) {
                 journal("Empreinte non inscrite : le dictionnaire repartira au prochain démarrage")
             }
         }
@@ -282,11 +305,22 @@ internal class DictionarySyncCoordinator(
             // encore vivante; l'élaguer maintenant la perdrait pour toujours.
             // Son propre travail, derrière celui-ci, la prendra.
             val (anciennes, nouvelles) = enAttente.partition { (inscriptions[it.paire] ?: 0L) <= borne }
-            // Le dictionnaire vivant est lu ici, sous le verrou : une mutation
-            // est soit entièrement avant (déjà hors du vivant et en file), soit
-            // entièrement après (son travail suivra celui-ci).
-            val gardees = PendingTombstones.aRejouer(anciennes, exclure(), maintenant)
-            if (gardees.size != anciennes.size) ecrireFile(enAttente.filter { it in gardees || it in nouvelles })
+            // Le dictionnaire vivant est lu ici, sous le verrou. Ce qui tient :
+            // une pierre tombale inscrite à une génération plus grande que la
+            // borne appartient à une suppression demandée après ce rejeu, et
+            // n'est pas jugée. Ce qui ne tient pas encore : la borne est lue
+            // sous le verrou mais la mise en file se fait hors de lui, donc un
+            // rejeu demandé entre l'inscription d'une pierre tombale et la mise
+            // en file de son travail peut la voir à sa propre génération et,
+            // si la ligne n'est pas encore effacée, l'élaguer. Inatteignable
+            // tant que `synchroniserAuDemarrage` n'a qu'un appelant (l'init du
+            // magasin, sur le même fil que les suppressions); à fermer sur
+            // décision d'Olivier — `demander` sous le verrou, ou la boîte
+            // d'envoi transactionnelle.
+            val gardees = PendingTombstones.aRejouer(anciennes, exclure() + reapprises, maintenant)
+            if (gardees.size != anciennes.size && !ecrireFile(enAttente.filter { it in gardees || it in nouvelles })) {
+                journal("File de pierres tombales non réécrite (écriture refusée) : élagage repris au prochain rejeu")
+            }
             gardees
         }
         if (aRejouer.isEmpty()) return
@@ -307,7 +341,9 @@ internal class DictionarySyncCoordinator(
             synchronized(verrou) {
                 val courante = lireFile()
                 val restantes = PendingTombstones.restantes(courante, envoyees)
-                if (restantes.size != courante.size) ecrireFile(restantes)
+                if (restantes.size != courante.size && !ecrireFile(restantes)) {
+                    journal("File de pierres tombales non réécrite (écriture refusée) : des pierres tombales déjà acceptées repartiront")
+                }
             }
         }
     }
@@ -322,13 +358,18 @@ internal class DictionarySyncCoordinator(
         }
 
     /**
-     * Sous [verrou]. Vrai si la file est durable. Les inscriptions suivent
-     * la file : une paire sortie n'a plus de génération.
+     * Sous [verrou]. Vrai si la file est durable. Les inscriptions et les
+     * paires réapprises suivent la file **durable** : une paire sortie n'a
+     * plus de génération ni rien à compenser; une écriture refusée ne change
+     * rien à ce qu'elles décrivent.
      */
     private fun ecrireFile(file: List<TombaleEnAttente>): Boolean {
         val durable = memoire.ecrire(KEY_PENDING_TOMBSTONES, PendingTombstones.encode(file))
-        val presentes = file.map { it.paire }.toSet()
-        inscriptions.keys.retainAll(presentes)
+        if (durable) {
+            val presentes = file.map { it.paire }.toSet()
+            inscriptions.keys.retainAll(presentes)
+            reapprises.retainAll(presentes)
+        }
         return durable
     }
 
