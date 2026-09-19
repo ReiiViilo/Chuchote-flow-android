@@ -514,11 +514,17 @@ class ChuchoteStore private constructor(
             // Sans elle, l'autre appareil continuerait d'appliquer un mot
             // qu'on vient de retirer ici.
             val entree = _dictionnaire.value.firstOrNull { it.id == id }
-            db.writableDatabase.delete("dictionnaire", "id = ?", arrayOf(id.toString()))
-            rechargerDictionnaire()
+            // La pierre tombale est inscrite dans `chuchote_sync` — sur ce fil,
+            // avant de revenir — **avant** d'effacer la ligne : si le processus
+            // meurt entre les deux, la suppression n'a pas eu lieu et le rejeu
+            // du démarrage écarte une pierre tombale dont le mot est encore
+            // vivant; dans l'ordre inverse, une suppression faite mais jamais
+            // annoncée laisserait le mot au relais pour toujours.
             if (entree != null) {
                 syncPusher?.pushDictionaryTombstone(entree.entendu, entree.remplacerPar)
             }
+            db.writableDatabase.delete("dictionnaire", "id = ?", arrayOf(id.toString()))
+            rechargerDictionnaire()
         }
     }
 

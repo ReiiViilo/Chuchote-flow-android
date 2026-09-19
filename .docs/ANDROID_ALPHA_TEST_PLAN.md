@@ -183,9 +183,21 @@ Synchronisation vers le relais (`/api/sync/*`), sur le même serveur de test :
   synchronisé » après le dernier « lot n/n du dictionnaire synchronisé »),
   un `GET /api/sync/dictionary` ne renvoie plus l'entrée, et le démarrage
   suivant republie (l'empreinte a été effacée par la suppression);
+- [ ] avec la même fixture, pendant la republication de démarrage : supprimer
+  une entrée, la réapprendre (saisie manuelle), la supprimer de nouveau; après
+  le dernier lot, `logcat` montre « Mot #ajout synchronisé » **puis** « Mot
+  #retrait synchronisé » en dernier, et un `GET /api/sync/dictionary` ne
+  renvoie plus l'entrée;
+- [ ] supprimer une entrée puis tuer le processus aussitôt (« Forcer l'arrêt »
+  dans les réglages système, dans la seconde) : au lancement suivant, la
+  pierre tombale part (« Mot #retrait synchronisé ») et l'entrée n'est ni
+  dans le Dictionnaire ni renvoyée par le `GET`;
 - [ ] changer l'adresse du relais pour un second serveur de test : au
   démarrage suivant, tout le dictionnaire est republié vers lui; revenir à la
-  première adresse : republié aussi, l'empreinte étant liée à l'adresse;
+  première adresse : republié aussi, l'empreinte étant liée à l'adresse; avec
+  la fixture de plus de 500 entrées, changer l'adresse **entre deux lots** de
+  la republication : les deux lots atteignent le premier serveur (journal du
+  relais), et le démarrage suivant republie tout vers le second;
 - [ ] retirer le consentement : aucun `POST /api/sync/*` ne part, même pour
   une pierre tombale déjà en file;
 - [ ] confirmer que ces requêtes correspondent exactement à la divulgation de

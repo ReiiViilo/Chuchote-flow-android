@@ -46,12 +46,20 @@ class DictionarySyncCoordinatorTest {
             get() = PendingTombstones.decode(lire(DictionarySyncCoordinator.KEY_PENDING_TOMBSTONES)).orEmpty()
     }
 
-    /** Ce que le relais a reçu, dans l'ordre, sous la forme `étiquette[entendu→remplacement:état …]`. */
+    /**
+     * Ce que le relais a reçu, dans l'ordre, sous la forme
+     * `étiquette[entendu→remplacement:état …]`, et l'adresse visée par chaque envoi accepté.
+     */
     private class Relais {
         val recus = CopyOnWriteArrayList<String>()
+        val cibles = CopyOnWriteArrayList<String>()
 
         @Volatile
         var enPanne = false
+
+        /** Le prochain envoi lève au lieu de répondre (un bogue de transport, pas un refus). */
+        @Volatile
+        var leveUneFois = false
 
         @Volatile
         private var porte: Pair<CompletableDeferred<Unit>, CompletableDeferred<Unit>>? = null
@@ -60,14 +68,19 @@ class DictionarySyncCoordinatorTest {
         fun bloquerLeProchainEnvoi(): Pair<CompletableDeferred<Unit>, CompletableDeferred<Unit>> =
             (CompletableDeferred<Unit>() to CompletableDeferred<Unit>()).also { porte = it }
 
-        suspend fun envoyer(path: String, payload: JSONObject, label: String, readTimeoutMs: Int): Boolean {
+        suspend fun envoyer(cible: RemoteRequestTarget, path: String, payload: JSONObject, label: String, readTimeoutMs: Int): Boolean {
             assertEquals("/api/sync/dictionary", path)
             porte?.let { (enVol, liberer) ->
                 porte = null
                 enVol.complete(Unit)
                 liberer.await()
             }
+            if (leveUneFois) {
+                leveUneFois = false
+                throw IllegalStateException("transport cassé")
+            }
             if (enPanne) return false
+            cibles += cible.baseUrl
             val entries = payload.getJSONArray("entries")
             recus += (0 until entries.length()).joinToString(" ", prefix = "$label[", postfix = "]") { index ->
                 val entry = entries.getJSONObject(index)
@@ -90,8 +103,8 @@ class DictionarySyncCoordinatorTest {
     private fun coordinateur(memoire: Memoire, relais: Relais, destination: () -> String? = { "https://relais.test" }) =
         DictionarySyncCoordinator(
             memoire = memoire,
-            destination = destination,
-            envoyer = { path, payload, label, timeout -> relais.envoyer(path, payload, label, timeout) },
+            destination = { destination()?.let { RemoteRequestTarget(baseUrl = it, token = "jeton") } },
+            envoyer = { cible, path, payload, label, timeout -> relais.envoyer(cible, path, payload, label, timeout) },
             scope = scope,
         )
 
@@ -141,13 +154,15 @@ class DictionarySyncCoordinatorTest {
         liberer.complete(Unit)
         coordinateur.attendre()
 
-        // La pierre tombale n'est pas exclue par un instantané périmé : elle
-        // part au rejeu du démarrage, et le lot ne porte plus wapiti.
+        // Le lot ne porte plus wapiti. Sa pierre tombale, inscrite après la
+        // demande de démarrage, n'est pas prise par le rejeu de celui-ci :
+        // elle part par son propre travail, derrière le lot — qui ne peut
+        // donc pas la dépasser.
         assertEquals(
             listOf(
                 "Mot #ajout[xylo→Xylo:vivant]",
-                "Mot #retrait[wapiti→Wapiti:retrait]",
                 "lot 1/1 du dictionnaire[vrai→Vrai:vivant]",
+                "Mot #retrait[wapiti→Wapiti:retrait]",
             ),
             relais.recus,
         )
@@ -174,7 +189,7 @@ class DictionarySyncCoordinatorTest {
         dictionnaire.set(listOf(entree(2, "echo", "Écho")))
         coordinateur.ajouter("echo" to "Écho") // hors ligne : l'ajout échoue et n'a pas de file
         coordinateur.attendre()
-        assertNull("une mutation efface l'empreinte, même si son envoi a échoué", memoire.empreinte)
+        assertNull("l'empreinte, effacée par la suppression, reste effacée après l'ajout manqué", memoire.empreinte)
 
         relais.enPanne = false
         coordinateur.synchroniserAuDemarrage { dictionnaire.get() }
@@ -230,6 +245,107 @@ class DictionarySyncCoordinatorTest {
         coordinateur.attendre()
         assertEquals(listOf("lot 1/1 du dictionnaire[golf→Golf:vivant]"), relais.recus)
         assertNotNull(memoire.empreinte)
+    }
+
+    @Test
+    fun `un rejeu en file ne consomme pas une pierre tombale inscrite apres lui`() = runBlocking {
+        val memoire = Memoire()
+        val relais = Relais()
+        val coordinateur = coordinateur(memoire, relais)
+        val (enVol, liberer) = relais.bloquerLeProchainEnvoi()
+
+        coordinateur.ajouter("kilo" to "Kilo") // occupe le fil d'envoi
+        withTimeout(10_000) { enVol.await() }
+        // Pendant ce temps : supprimé, réappris, supprimé de nouveau.
+        coordinateur.retirer("kilo" to "Kilo")
+        coordinateur.ajouter("kilo" to "Kilo")
+        coordinateur.retirer("kilo" to "Kilo")
+        liberer.complete(Unit)
+        coordinateur.attendre()
+
+        // Le premier rejeu ne trouve plus sa pierre tombale (le réapprentissage
+        // l'a retirée) et ne doit pas prendre celle de la seconde suppression :
+        // sinon l'ajout partirait en dernier et le mot resterait vivant.
+        assertEquals(
+            listOf(
+                "Mot #ajout[kilo→Kilo:vivant]",
+                "Mot #ajout[kilo→Kilo:vivant]",
+                "Mot #retrait[kilo→Kilo:retrait]",
+            ),
+            relais.recus,
+        )
+        assertTrue(memoire.file.isEmpty())
+    }
+
+    @Test
+    fun `une pierre tombale inscrite avant l envoi survit a une mort du processus`() = runBlocking {
+        val memoire = Memoire()
+        val relais = Relais()
+        relais.enPanne = true
+        val premier = coordinateur(memoire, relais)
+
+        premier.retirer("lima" to "Lima") // inscrite sur le fil appelant, l'envoi échoue
+        premier.attendre()
+        assertTrue(relais.recus.isEmpty())
+        assertEquals(listOf("lima" to "Lima"), memoire.file.map { it.paire })
+
+        // Nouveau processus : même mémoire durable, coordinateur neuf, relais revenu.
+        relais.enPanne = false
+        val second = coordinateur(memoire, relais)
+        second.synchroniserAuDemarrage { emptyList() }
+        second.attendre()
+
+        assertEquals(listOf("Mot #retrait[lima→Lima:retrait]"), relais.recus)
+        assertTrue(memoire.file.isEmpty())
+    }
+
+    @Test
+    fun `une republication en plusieurs lots vise le relais lu a son depart`() = runBlocking {
+        val memoire = Memoire()
+        val relais = Relais()
+        val cible = AtomicReference("https://a.test")
+        val entrees = (1..501).map { entree(it.toLong(), "mot $it", "Mot $it") }
+        val coordinateur = coordinateur(memoire, relais) { cible.get() }
+        val (enVol, liberer) = relais.bloquerLeProchainEnvoi()
+
+        coordinateur.synchroniserAuDemarrage { entrees }
+        withTimeout(10_000) { enVol.await() } // le premier lot est en vol vers A
+        cible.set("https://b.test")
+        liberer.complete(Unit)
+        coordinateur.attendre()
+
+        // Les deux lots vont à A, et l'empreinte enregistrée est celle de A.
+        assertEquals(listOf("https://a.test", "https://a.test"), relais.cibles)
+        assertEquals(2, relais.recus.size)
+        assertEquals(SyncPayloads.dictionarySignature(entrees, "https://a.test"), memoire.empreinte)
+
+        // B n'a rien accepté : le démarrage suivant republie vers lui.
+        coordinateur.synchroniserAuDemarrage { entrees }
+        coordinateur.attendre()
+        assertEquals(listOf("https://a.test", "https://a.test", "https://b.test", "https://b.test"), relais.cibles)
+        assertEquals(SyncPayloads.dictionarySignature(entrees, "https://b.test"), memoire.empreinte)
+    }
+
+    @Test
+    fun `un envoi qui leve ne tue pas le fil d envoi`() = runBlocking {
+        val memoire = Memoire()
+        val relais = Relais()
+        val journal = CopyOnWriteArrayList<String>()
+        val coordinateur = DictionarySyncCoordinator(
+            memoire = memoire,
+            destination = { RemoteRequestTarget(baseUrl = "https://relais.test", token = "jeton") },
+            envoyer = { cible, path, payload, label, timeout -> relais.envoyer(cible, path, payload, label, timeout) },
+            scope = scope,
+            journal = { journal += it },
+        )
+
+        relais.leveUneFois = true
+        coordinateur.ajouter("mike" to "Mike") // le transport lève
+        coordinateur.ajouter("november" to "November") // le suivant doit partir quand même
+        coordinateur.attendre()
+
+        assertEquals(listOf("Mot #ajout[november→November:vivant]"), relais.recus)
+        assertEquals(listOf("Travail de synchronisation abandonné (IllegalStateException)"), journal)
     }
 
     @Test

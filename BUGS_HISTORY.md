@@ -779,3 +779,87 @@ change avec le relais, pas avec une barre oblique finale.
   politique vivait dans une classe Android (`SharedPreferences`,
   `HttpURLConnection`) qu'aucun test JVM ne pouvait exercer. La séparer de
   l'appareil a suffi à rendre les trois scénarios rejouables.
+
+## 2026-09-19 — Deuxième ronde : une pierre tombale consommée par le mauvais rejeu, une suppression perdue à la mort du processus, un lot parti au mauvais relais
+
+### Symptôme observable
+
+- Aucun retour d'appareil : trois défauts établis par lecture du code lors de
+  la seconde revue externe (Codex, 19 septembre 2026, `--base cf38768`, sur
+  le correctif `fix(sync)` du même jour), verdict « needs-attention — Do not
+  ship: dictionary sync can permanently resurrect deleted entries, lose
+  deletions across crashes, and falsely record successful synchronization. »
+- Attendus sur l'appareil s'ils s'étaient produits : un mot supprimé,
+  réappris puis resupprimé pendant que le fil d'envoi était occupé restait
+  vivant sur le relais (le premier rejeu consommait la seconde pierre
+  tombale, l'ajout partait en dernier); une mort du processus entre le
+  `DELETE` de `chuchote.db` et l'inscription de la pierre tombale perdait la
+  suppression pour toujours (ni dans le dictionnaire, ni en file); un
+  changement d'adresse de relais entre deux lots de 500 envoyait le second
+  lot au nouveau relais et inscrivait l'empreinte pour l'ancien, qui restait
+  incomplet sans jamais être republié.
+
+### Surface et domaine
+
+- Ordre des envois du dictionnaire (`DictionarySyncCoordinator`), suppression
+  d'une entrée (`ChuchoteStore.supprimerEntree`), cible d'une republication
+  (`SyncPusher.send`).
+
+### Cause racine
+
+1. **Un rejeu lisait la file au moment de partir.** Il envoyait tout ce
+   qu'elle contenait, y compris une pierre tombale inscrite après sa demande
+   — et devant laquelle un ajout attendait encore son tour.
+2. **La trace durable venait après l'action.** `supprimerEntree` effaçait la
+   ligne SQLite, rechargeait, puis inscrivait la pierre tombale : la fenêtre
+   entre les deux n'était couverte par rien.
+3. **La cible n'était pas liée au travail.** `send` relisait les réglages à
+   chaque envoi; la republication ne lisait l'adresse qu'une fois, pour
+   l'empreinte.
+
+### Correctif
+
+- Chaque pierre tombale inscrite dans ce processus porte la génération à
+  laquelle elle l'a été (`inscriptions`, sous le verrou); un rejeu demandé à
+  la génération g n'envoie que celles inscrites au plus tard à g — celles
+  d'un processus précédent partent toujours.
+- La pierre tombale est inscrite dans `chuchote_sync` **avant** le `DELETE`;
+  une mort du processus entre les deux laisse au pire une pierre tombale d'un
+  mot encore vivant, que le rejeu suivant écarte sans l'envoyer. Le
+  correctif plus fort — la pierre tombale dans la même transaction SQLite que
+  la suppression — changerait la mémoire de la file (`chuchote_sync`) et
+  reste à décider.
+- `envoyer` reçoit sa cible : la republication lit `RemoteRequestTarget` une
+  fois et l'adresse à tous ses lots comme à son empreinte; un ajout ou un
+  rejeu lit la cible au moment de partir. `SyncPusher.send` ne relit plus les
+  réglages.
+- Constats non bloquants du `code-reviewer` pris au passage : la génération
+  est relevée avant de lire le dictionnaire (une mutation glissée entre la
+  lecture et le premier envoi laisse l'empreinte effacée); un `trySend`
+  refusé est journalisé; les délais de transport vivent dans `SyncTimeouts`,
+  ni dans le coordinateur ni dans le pousseur; `REMOTE_RELAY_PRIVACY_SECURITY.md`
+  décrit le fil unique, l'empreinte liée au relais et la republication vers
+  chaque nouveau relais.
+
+### Test de non-régression
+
+`DictionarySyncCoordinatorTest`, quatre scénarios de plus : rejeu en file qui
+ne consomme pas une pierre tombale inscrite après lui (fil occupé, supprimé,
+réappris, resupprimé : l'ajout part avant le retrait); pierre tombale
+inscrite avant l'envoi qui survit à un nouveau coordinateur sur la même
+mémoire; republication en deux lots dont l'adresse change entre les deux (les
+deux lots vont au premier relais, l'empreinte est la sienne, le démarrage
+suivant republie vers le second); envoi qui lève sans tuer le fil.
+
+### Ce qui reste à prouver sur l'appareil
+
+- Les trois étapes ajoutées au § 6 du plan de test alpha : suppression,
+  réapprentissage et resuppression pendant la republication; suppression
+  suivie d'un arrêt forcé; changement d'adresse entre deux lots.
+
+### Ce qui l'aurait attrapé plus tôt
+
+- Le même harnais que la ronde précédente, avec un scénario de plus par
+  constat : un fil bloqué, trois mutations dessus; deux coordinateurs sur une
+  mémoire; une cible qui change entre deux lots. Chacun tient en quinze
+  lignes — c'est la revue externe qui a posé les trois questions.

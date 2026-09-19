@@ -65,8 +65,8 @@ class SyncPusher(context: Context) {
                 override fun ecrire(cle: String, valeur: String) = prefs.edit(commit = true) { putString(cle, valeur) }
                 override fun effacer(cle: String) = prefs.edit(commit = true) { remove(cle) }
             },
-            destination = { settings.snapshot().requestTarget?.baseUrl },
-            envoyer = { path, payload, label, readTimeoutMs -> send(path, payload, label, readTimeoutMs) },
+            destination = { settings.snapshot().requestTarget },
+            envoyer = { cible, path, payload, label, readTimeoutMs -> send(cible, path, payload, label, readTimeoutMs) },
             scope = scope,
             journal = { message -> Log.w(TAG, message) },
         )
@@ -82,11 +82,13 @@ class SyncPusher(context: Context) {
     ) {
         if (finalText.isBlank()) return
         scope.launch {
+            val target = settings.snapshot().requestTarget ?: return@launch
             send(
+                target,
                 "/api/sync/dictations",
                 SyncPayloads.dictation(localId, createdAtMs, rawText, finalText, durationMs, source),
                 "Dictée $localId",
-                DictionarySyncCoordinator.READ_TIMEOUT_MS,
+                SyncTimeouts.READ_TIMEOUT_MS,
             )
         }
     }
@@ -150,18 +152,20 @@ class SyncPusher(context: Context) {
     }
 
     /**
-     * Envoi best-effort commun. Vrai si le relais a accepté. Faux — sans
-     * bruit — si la synchronisation n'est pas configurée ou consentie; faux
-     * avec un journal expurgé (jamais le message brut, qui peut porter un nom
-     * d'hôte) sur toute défaillance.
+     * Envoi best-effort commun, vers la cible que l'appelant a lue — une
+     * republication en plusieurs lots les adresse tous au même relais, même
+     * si l'adresse change entre deux. Vrai si le relais a accepté. Faux — sans
+     * bruit — si la synchronisation n'est pas consentie; faux avec un journal
+     * expurgé (jamais le message brut, qui peut porter un nom d'hôte) sur
+     * toute défaillance.
      */
     private suspend fun send(
+        target: RemoteRequestTarget,
         path: String,
         payload: JSONObject,
         label: String,
         readTimeoutMs: Int,
     ): Boolean {
-        val target = settings.snapshot().requestTarget ?: return false
         noterRelaisConfigure()
         // Le consentement est relu au dernier moment, dans la coroutine :
         // une révocation entre l'apprentissage et l'envoi est respectée.
@@ -171,7 +175,7 @@ class SyncPusher(context: Context) {
             val connection = url.openConnection() as HttpURLConnection
             try {
                 connection.requestMethod = "POST"
-                connection.connectTimeout = CONNECT_TIMEOUT_MS
+                connection.connectTimeout = SyncTimeouts.CONNECT_TIMEOUT_MS
                 connection.readTimeout = readTimeoutMs
                 connection.doOutput = true
                 connection.setRequestProperty("Content-Type", "application/json")
@@ -199,6 +203,5 @@ class SyncPusher(context: Context) {
         const val TAG = "SyncPusher"
         const val PREFS = "chuchote_sync"
         const val KEY_SYNC_CONFIGURED = "sync_configured"
-        const val CONNECT_TIMEOUT_MS = 10_000
     }
 }

@@ -68,17 +68,23 @@ et vérifiées sur la JVM — avec le `org.json` de référence (`testImplementa
 | Point d'entrée | Quand | Ce qui part |
 |---|---|---|
 | `POST /api/sync/dictations` | chaque dictée terminée, depuis `MainRecognitionService` | `device="android"`, identifiant local de la dictée, `created_at` ISO UTC, texte brut STT, texte final après substitutions, durée, source |
-| `POST /api/sync/dictionary` | à l'ajout d'une entrée; à sa suppression (pierre tombale `deleted=true`); au démarrage du store, les pierres tombales encore en file puis la liste entière si son empreinte SHA-256 diffère de la dernière republication réussie | `heard`, `replace_with`, `deleted` — par lots de 500 entrées au plus (plafond du relais), autant de lots que nécessaire; l'empreinte n'est retenue que si tous les lots sont passés |
+| `POST /api/sync/dictionary` | à l'ajout d'une entrée; à sa suppression (pierre tombale `deleted=true`, inscrite en file **avant** que la ligne soit effacée); au démarrage du store, les pierres tombales encore en file puis la liste entière si son empreinte SHA-256 — liée à l'adresse du relais, effacée par toute mutation du dictionnaire — n'est pas celle que **ce** relais a déjà acceptée : un relais nouvellement configuré reçoit donc tout le dictionnaire | `heard`, `replace_with`, `deleted` — par lots de 500 entrées au plus (plafond du relais), autant de lots que nécessaire, tous adressés au relais lu au départ de la republication; l'empreinte n'est retenue que si tous les lots sont passés et qu'aucune mutation n'a couru pendant les envois |
 
 Frontières, identiques au relais de transcription : rien ne part sans relais
 configuré **et** sans consentement courant, relu dans la coroutine d'envoi.
 Tout est best-effort et hors du chemin critique : un échec (réseau, HTTP non
 `2xx`) est journalisé (`Log.w`, tag `SyncPusher`, code de diagnostic expurgé,
 jamais le contenu ni le message brut) puis oublié, la vérité locale reste
-`chuchote.db`. **Une seule chose est mise en file** : la pierre tombale d'une
-suppression, conservée dans `chuchote_sync` (exclu des sauvegardes) tant que
-le relais ne l'a pas acceptée, rejouée à chaque démarrage et à chaque nouvelle
-suppression, retirée de la file si le mot est réappris entre-temps. La file
+`chuchote.db`. Tout ce qui part vers `/api/sync/dictionary` — ajouts, pierres
+tombales, republication — passe par un seul fil d'envoi, dans l'ordre où le
+magasin l'a demandé ([`DictionarySyncCoordinator`](../app/src/main/kotlin/dev/soupslurpr/transcribro/remote/DictionarySyncCoordinator.kt)),
+pour qu'une republication encore en vol ne ressuscite jamais un mot supprimé
+pendant qu'elle partait. **Une seule chose survit à la mort du processus** :
+la pierre tombale d'une suppression, conservée dans `chuchote_sync` (exclu des
+sauvegardes) tant que le relais ne l'a pas acceptée, rejouée à chaque démarrage
+et à chaque nouvelle suppression — un rejeu n'envoie que les pierres tombales
+inscrites avant sa demande —, retirée de la file si le mot est réappris
+entre-temps. La file
 n'est alimentée que si la synchronisation a déjà été configurée une fois sur
 l'appareil (drapeau `sync_configured` dans `chuchote_sync` : un appareil sans
 relais ne garde aucune trace de ses suppressions, mais un relais momentanément
@@ -104,7 +110,11 @@ Conséquence pour la vie privée : le **texte** des dictées quitte désormais
 l'appareil même quand la transcription a été faite localement, dès que le
 relais est configuré et le consentement donné. La politique du 15 septembre
 2026 le divulgue et le consentement a été reversionné en conséquence (voir
-« Consentement d'exécution »). Le contrat serveur et ses défauts connus sont
+« Consentement d'exécution »). Depuis le 19 septembre 2026, le dictionnaire
+personnel entier est republié vers **chaque** adresse de relais nouvellement
+configurée (l'empreinte est liée à l'adresse), et non plus une seule fois :
+l'ensemble des destinataires s'élargit avec chaque relais saisi — aucune donnée
+nouvelle ne sort, la divulgation du 15 septembre reste couvrante. Le contrat serveur et ses défauts connus sont
 décrits dans le plan
 [`PLAN_SYNC_TEMPS_REEL_ET_UI_COMMUNE.md`](https://github.com/ReiiViilo/Chuchote-Flow/blob/main/.docs/PLAN_SYNC_TEMPS_REEL_ET_UI_COMMUNE.md)
 du dépôt desktop.
