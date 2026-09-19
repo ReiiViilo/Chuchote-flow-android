@@ -62,15 +62,18 @@ object SyncPayloads {
             }
 
     /**
-     * Empreinte du dictionnaire tel qu'il serait envoyé : sert à ne pas
-     * republier à chaque démarrage un dictionnaire qui n'a pas changé. Les
-     * deux champs sont séparés par un caractère nul — écrit en échappement,
+     * Empreinte du dictionnaire tel qu'il serait envoyé, liée au relais qui
+     * l'a acceptée ([destination], adresse de base) : sert à ne pas republier à
+     * chaque démarrage un dictionnaire qu'un relais a déjà accepté — et à
+     * republier dès qu'on change de relais, puisque le nouveau n'a rien accepté.
+     * Les deux champs sont séparés par un caractère nul — écrit en échappement,
      * jamais en octet brut, sinon Git classe le fichier en binaire et son diff
-     * disparaît des revues — parce qu'une espace laisserait `("a b","c")` et
-     * `("a","b c")` produire la même empreinte.
+     * disparaît de toute revue — pour qu'un séparateur espace ne fasse pas
+     * `("a b","c")` et `("a","b c")` produire la même empreinte.
      */
-    fun dictionarySignature(entrees: List<EntreeDictionnaire>): String {
+    fun dictionarySignature(entrees: List<EntreeDictionnaire>, destination: String): String {
         val digest = java.security.MessageDigest.getInstance("SHA-256")
+        digest.update("${destination.trim().trimEnd('/')}\n".toByteArray(Charsets.UTF_8))
         entrees.asSequence()
             .filter { it.entendu.isNotBlank() }
             .map { "${it.entendu.trim()}\u0000${it.remplacerPar.trim()}\n" }

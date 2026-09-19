@@ -177,6 +177,15 @@ Synchronisation vers le relais (`/api/sync/*`), sur le même serveur de test :
 - [ ] avec un dictionnaire de plus de 500 entrées (fixture jetable QA) :
   la republication de démarrage se fait en plusieurs `POST` de 500 au plus,
   et un second démarrage sans changement n'en fait aucun;
+- [ ] avec la même fixture, supprimer une entrée **pendant** la republication
+  de démarrage (dans les secondes qui suivent le lancement) : la pierre
+  tombale part **après** le dernier lot (`logcat` : « Mot #retrait
+  synchronisé » après le dernier « lot n/n du dictionnaire synchronisé »),
+  un `GET /api/sync/dictionary` ne renvoie plus l'entrée, et le démarrage
+  suivant republie (l'empreinte a été effacée par la suppression);
+- [ ] changer l'adresse du relais pour un second serveur de test : au
+  démarrage suivant, tout le dictionnaire est republié vers lui; revenir à la
+  première adresse : republié aussi, l'empreinte étant liée à l'adresse;
 - [ ] retirer le consentement : aucun `POST /api/sync/*` ne part, même pour
   une pierre tombale déjà en file;
 - [ ] confirmer que ces requêtes correspondent exactement à la divulgation de

@@ -233,7 +233,7 @@ class ChuchoteStore private constructor(
             // réparé. Best-effort, donc derrière la même frontière que le
             // reste de la maintenance : jamais un prérequis au chargement.
             StoreStartupBoundary.runBestEffort(
-                step = { syncPusher?.synchroniserAuDemarrage(_dictionnaire.value) },
+                step = { syncPusher?.synchroniserAuDemarrage { _dictionnaire.value } },
                 onFailure = ::journaliserEchecSynchronisation,
             )
             var didMutateHistory = false

@@ -699,3 +699,83 @@ dont la suppression hors ligne puis relance et le relais non configuré.
 - Un test de politique de rejeu séparé du transport, dès la première version
   de la file : les trois manques de la ronde 3 étaient tous dans du code que
   rien n'exerçait sur la JVM.
+
+## 2026-09-19 — Trois croisements d'envois pouvaient ressusciter un mot supprimé ou ne jamais republier le dictionnaire
+
+### Symptôme observable
+
+- Aucun retour d'appareil : trois défauts établis par lecture du code lors de
+  la revue externe (Codex, 19 septembre 2026, `--base cf38768`), verdict
+  « needs-attention — Do not ship: dictionary sync can resurrect deleted
+  entries and permanently skip required uploads. »
+- Attendus sur l'appareil s'ils s'étaient produits : un mot supprimé pendant
+  la republication de démarrage qui continue d'être corrigé sur le desktop;
+  un mot réappris hors ligne qui n'atteint jamais le relais; un changement
+  d'adresse de relais après lequel le nouveau relais ne reçoit jamais le
+  dictionnaire.
+
+### Surface et domaine
+
+- Poussée du dictionnaire vers le relais (`SyncPusher`), démarrage du
+  magasin (`ChuchoteStore`), empreinte de republication (`SyncPayloads`).
+
+### Détection
+
+- Revue adversariale externe, relancée après la fin du quota Codex; les trois
+  constats ont été reproduits mentalement sur le code, puis rejoués par des
+  tests JVM avant correction.
+
+### Cause racine
+
+1. **Envois concurrents vers un relais dernier-écrit-gagne.** La republication
+   de démarrage (lots de 500, jusqu'à 35 s chacun) et les pierres tombales
+   partaient sur des coroutines indépendantes. Une suppression faite pendant
+   un lot voyait sa pierre tombale acceptée puis retirée de la file, avant
+   que le lot — construit sur un instantané où le mot vivait encore — ne le
+   réécrive `deleted=false`. Rien ne le réparait : le mot était absent
+   localement, la pierre tombale partie.
+2. **Une empreinte qui ne savait pas qu'une mutation avait échoué.** L'empreinte
+   `dictionary_signature` n'était touchée que par une republication réussie.
+   Supprimer un mot en ligne puis le réapprendre hors ligne ramenait le
+   dictionnaire à l'état déjà signé : le démarrage suivant ne republiait
+   pas, et le relais gardait la pierre tombale.
+3. **Une empreinte sans destinataire.** L'empreinte ne portait que le
+   contenu : changer l'adresse du relais laissait le nouveau relais sans
+   dictionnaire, indéfiniment.
+
+### Correctif
+
+- `DictionarySyncCoordinator` (Kotlin pur) reprend toute la politique :
+  un seul fil d'envoi (`Channel` consommé par une coroutine) fait partir
+  ajouts, pierres tombales et republication dans l'ordre où le magasin les a
+  demandés; la trace durable d'une mutation (pierre tombale en file,
+  empreinte effacée) est inscrite sur le fil du magasin avant la mise en
+  file; la republication relit le dictionnaire au moment où elle part
+  (`ChuchoteStore` passe un fournisseur, plus un instantané) et
+  n'enregistre son empreinte que si aucune mutation ne s'est glissée pendant
+  ses envois; `SyncPayloads.dictionarySignature` prend l'adresse de base du
+  relais. `SyncPusher` ne garde que l'appareil : `chuchote_sync`, réglages,
+  consentement, HTTP.
+
+### Test de non-régression
+
+`DictionarySyncCoordinatorTest` : six scénarios sur un relais factice qu'on
+bloque ou met en panne — suppression pendant le lot (la pierre tombale part
+après, l'empreinte reste effacée), dictionnaire lu au départ du travail et
+non à la demande, ajout manqué hors ligne rattrapé par la republication
+suivante, changement de relais qui republie, lot refusé qui laisse
+l'empreinte vide, aucun relais configuré. `SyncPayloadsTest` : l'empreinte
+change avec le relais, pas avec une barre oblique finale.
+
+### Ce qui reste à prouver sur l'appareil
+
+- Les deux étapes ajoutées au § 6 du plan de test alpha : suppression pendant
+  la republication de démarrage (fixture de plus de 500 entrées), changement
+  d'adresse de relais.
+
+### Ce qui l'aurait attrapé plus tôt
+
+- Un test qui bloque un envoi et en lance un autre pendant ce temps : la
+  politique vivait dans une classe Android (`SharedPreferences`,
+  `HttpURLConnection`) qu'aucun test JVM ne pouvait exercer. La séparer de
+  l'appareil a suffi à rendre les trois scénarios rejouables.

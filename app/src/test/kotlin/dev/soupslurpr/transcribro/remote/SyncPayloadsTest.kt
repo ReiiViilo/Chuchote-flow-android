@@ -15,6 +15,11 @@ import org.junit.Test
  */
 class SyncPayloadsTest {
 
+    private companion object {
+        const val RELAIS = "https://relais.test"
+    }
+
+
     private fun entree(id: Long, entendu: String, remplacerPar: String = "") =
         EntreeDictionnaire(id, entendu, remplacerPar)
 
@@ -83,20 +88,29 @@ class SyncPayloadsTest {
 
     @Test
     fun `la signature ne depend ni de l ordre ni des espaces mais du contenu`() {
-        val a = SyncPayloads.dictionarySignature(listOf(entree(1, "hop hop", "OpOp"), entree(2, "Flow")))
-        val b = SyncPayloads.dictionarySignature(listOf(entree(9, "Flow "), entree(3, " hop hop", "OpOp ")))
-        val c = SyncPayloads.dictionarySignature(listOf(entree(1, "hop hop", "OpOp")))
+        val a = SyncPayloads.dictionarySignature(listOf(entree(1, "hop hop", "OpOp"), entree(2, "Flow")), RELAIS)
+        val b = SyncPayloads.dictionarySignature(listOf(entree(9, "Flow "), entree(3, " hop hop", "OpOp ")), RELAIS)
+        val c = SyncPayloads.dictionarySignature(listOf(entree(1, "hop hop", "OpOp")), RELAIS)
         assertEquals(a, b)
         assertNotEquals(a, c)
         assertEquals(64, a.length)
     }
 
     @Test
+    fun `la signature change avec le relais, pas avec une barre oblique finale`() {
+        val entrees = listOf(entree(1, "hop hop", "OpOp"))
+        val a = SyncPayloads.dictionarySignature(entrees, "https://a.test")
+        val b = SyncPayloads.dictionarySignature(entrees, "https://b.test")
+        assertNotEquals(a, b)
+        assertEquals(a, SyncPayloads.dictionarySignature(entrees, "https://a.test/"))
+    }
+
+    @Test
     fun `la signature distingue ou tombe la frontiere entre entendu et remplacement`() {
         // Un séparateur espace laisserait ces deux dictionnaires se confondre,
         // et le second ne serait jamais republié après le premier.
-        val gauche = SyncPayloads.dictionarySignature(listOf(entree(1, "a b", "c")))
-        val droite = SyncPayloads.dictionarySignature(listOf(entree(1, "a", "b c")))
+        val gauche = SyncPayloads.dictionarySignature(listOf(entree(1, "a b", "c")), RELAIS)
+        val droite = SyncPayloads.dictionarySignature(listOf(entree(1, "a", "b c")), RELAIS)
         assertNotEquals(gauche, droite)
     }
 
