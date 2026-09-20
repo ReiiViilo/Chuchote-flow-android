@@ -1457,3 +1457,79 @@ scénarios).
 - Un double de test écrit d'après la source de la plateforme, pas d'après
   l'idée qu'on s'en fait; et une lecture de `SharedPreferencesImpl` avant
   d'écrire « le résultat de `commit()` » dans un contrat.
+
+## 2026-09-19 — Neuvième ronde : verdicts consignés, aucune correction (deux familles à 2/2, checkpoint d'Olivier)
+
+### Symptôme observable
+
+- Aucun retour d'appareil. Neuvième revue externe (Codex, 19 septembre
+  2026 en heure locale, `--base cf38768`, sur 5ef952c) : « needs-attention
+  — Do not ship: connection failures can permanently resurrect deleted
+  dictionary entries. The 57 precompiled JVM tests pass; no fresh build or
+  device tests were run. » Un seul constat, `[high] Failed uploads can
+  overwrite acknowledged deletions` (`SyncPusher.kt:225-227`) : « If a
+  dictionary batch reaches the relay but its connection fails while
+  processing continues, this catch immediately releases the send queue. A
+  queued tombstone can then succeed and be removed from persistent storage
+  before the older batch writes that entry with deleted=false. The relay
+  uses unconditional upserts, so the entry is resurrected permanently:
+  startup cannot repair an entry absent locally whose tombstone is gone.
+  The 45-second timeout does not protect against early connection
+  failures. This documented D-006 gap remains unfixed. » Recommandation :
+  « Persist mutation versions, include them in dictionary payloads, and
+  make the relay reject stale writes. Gate dictionary synchronization
+  until that ordering guarantee exists. » Étape suivante proposée : « Add
+  a regression where a batch loses its connection, a subsequent tombstone
+  succeeds, and the older batch finishes afterward; verify the entry
+  remains deleted. » — D-006, tranché (version de mutation, tranche 1) :
+  consigné, non corrigé ici; le test de régression proposé va avec.
+- Sur le même commit, `code-reviewer` : `decision_required` — « La
+  correction STD-A est juste : j'ai rejoué le scénario du reviewer 8 sous
+  la nouvelle implémentation, contre la source AOSP, et il est fermé.
+  Aucun finding major ni critical. Le verdict n'est pas approved parce que
+  les deux familles auxquelles se rattachent tous mes constats sont à 2/2
+  (F-COMMENT, F-DOC-DRIFT) : la règle de convergence interdit une
+  troisième correction autonome et impose le checkpoint Ambre. Je ne
+  demande donc aucune correction. » Constats, tous `minor`, tous non
+  bloquants : STD-9A (le contrat « faux = rien n'a changé, ni sur disque »
+  est réfutable : `writeToFile` écrit la carte entière, et une écriture
+  hors verrou d'une autre clé — `installation_id`, `sync_configured` —
+  peut rendre durable une file refusée; conséquences instruites bénignes
+  ou auto-réparées), STD-9B (« Trois clés … et nulle part ailleurs » : le
+  coordinateur en a deux, et le fichier `chuchote_sync` en porte quatre),
+  STD-9C (« signalée une fois » était vrai avant la remise et ne l'est
+  plus : une file illisible remise en mémoire est rejournalisée à chaque
+  lecture — bruit, aucune perte), STD-9D (« part aussitôt, une seule
+  fois » est faux sur le chemin où `ecrireFile` lève : rien ne part,
+  atteignabilité quasi nulle sur AOSP), STD-9E (le double `FauxPrefs` ne
+  modélise pas le `true` sans écriture de `needsWrite == false`; vérifié
+  sans effet sur les cinq scénarios; mutant confirmé), STD-9F (« le
+  suivant en tire un autre » n'est pas garanti : un `commit()` ultérieur
+  réussi rend l'identifiant refusé durable — effet favorable), SPEC-9A
+  (l'entrée de la huitième ronde et trois autres sites datent du 20
+  septembre un travail fait le 19 en heure locale, convention du fichier),
+  SPEC-9B (la reformulation SPEC-A a laissé une ligne courte de la classe
+  que STD-E corrigeait, `BUGS_HISTORY.md:1321`). Signal SPEC-D renforcé :
+  « C'est la quatrième ronde consécutive dont le rendement porte
+  majoritairement sur du texte, et deux de mes constats sont
+  introduced_by_correction. »
+
+### Ce qui a été fait
+
+- Rien dans le code ni dans la doc : ce registre seulement. F-COMMENT et
+  F-DOC-DRIFT sont à leur deuxième correction autonome; la troisième est
+  à Olivier. Les constats ci-dessus restent tels quels dans le code et
+  les documents, y compris la date du titre de la huitième ronde.
+
+### Ce qui reste à trancher (Olivier)
+
+- SPEC-D : continuer la boucle sur le même angle, ou changer d'angle —
+  `pressure-tester` sur l'entrelacement STD-9A (hypothèse testable), gel
+  documentaire jusqu'à la séance appareil, ou autre profil.
+- F-COMMENT et F-DOC-DRIFT à 2/2 : ouvrir un budget, accepter la classe
+  telle quelle et la consigner, ou attaquer la cause structurelle — le
+  même contrat de `SyncMemoire` est énoncé en six endroits (`SyncMemoire`,
+  `PreferencesSyncMemoire`, `FauxPrefs`, le double du coordinateur,
+  `.docs/DATA_AND_PERSISTENCE.md`, ce registre).
+- Toujours ouverts : STD-1/F-COV (gelée), couverture F-DOC-PRIV, F-IDENT,
+  STD-D, D-006 (tranche 1, avec le test de régression proposé par Codex).
