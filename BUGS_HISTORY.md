@@ -1262,7 +1262,7 @@ scénarios).
   suppression durable d'un autre mot une fois disque et relais revenus —
   le relais ne reçoit que la pierre tombale du second mot. Mutant :
   retirer `if (durable)` de `ecrireFile` — l'élagage refusé vide alors
-  `inscriptions` et `reapprises`, et le rejeu envoie la pierre tombale
+  `reapprises`, et le rejeu envoie la pierre tombale
   d'un mot encore vivant ici, que le pair perd.
 - `SyncPayloadsTest` : `device_local_id` = `inst:42`; sans identifiant
   d'installation, le numéro de ligne part tel quel.
@@ -1273,3 +1273,97 @@ scénarios).
   scénario qu'on a essayé d'écrire et qui ne discrimine pas, jamais par
   une phrase. Et pour la décision F : un second appareil sur le relais
   dès la première QA.
+
+## 2026-09-19 — Septième ronde : la doc de vie privée qui niait le pseudonyme d'installation, des commentaires plus forts que le code
+
+### Symptôme observable
+
+- Aucun retour d'appareil. Septième revue externe (Codex, 19 septembre
+  2026, `--base cf38768`, sur 7a305c3) : « needs-attention — Do not ship:
+  connection failures can still permanently resurrect deleted dictionary
+  entries. » Un seul constat, `[high] Older uploads can overwrite
+  acknowledged deletions` (`SyncPusher.kt:231-233`) : « If an upload
+  reaches the relay but the connection fails before its write completes,
+  this catch immediately releases the serialized sender. A queued
+  tombstone can then succeed and be removed from the durable queue before
+  the older upload commits. The relay's unconditional upsert resurrects
+  the entry. Restart cannot repair this: the local entry is absent and its
+  tombstone is gone. The 45-second timeout does not protect against early
+  connection failures. » — le résiduel D-006, tranché (version de
+  mutation, tranche 1) : consigné, non corrigé ici. Sur le même commit,
+  `code-reviewer` : `decision_required` — deux bloquants, tous deux dans
+  du texte écrit pendant la boucle. STD-1 (famille « justification d'une
+  absence de couverture démentie par le harnais », budget de deux
+  corrections autonomes épuisé) : la phrase réécrite à la sixième ronde,
+  « les refus journalisés restent sans test — la fabrique du harnais ne
+  câble pas `journal` », est fausse deux fois — deux refus sont déjà
+  assertés (`DictionarySyncCoordinatorTest.kt:484` et `:516`) et quatre
+  tests construisent le coordinateur en direct avec `journal` câblé; seuls
+  les deux refus de `rejouer` (`DictionarySyncCoordinator.kt:350` et
+  `:373`) sont sans assertion, et le dix-huitième test déclenche le
+  premier sans le vérifier. Options remontées à Olivier : (a) troisième
+  correction bornée (réécrire la phrase et asserter le journal dans le
+  dix-huitième test), (b) couvrir d'abord les deux refus de `rejouer`,
+  (c) supprimer la clause de justification — ne consigner que le couvert;
+  recommandation du reviewer : (c), plus l'assertion d'une ligne de (a).
+  STD-2 (famille neuve) : `REMOTE_RELAY_PRIVACY_SECURITY.md` et le KDoc
+  de `installationId` disaient « rien de ce qui part ne désigne
+  l'appareil », alors que la décision F introduit un pseudonyme stable par
+  installation qui distingue durablement ses dictées dans l'historique
+  partagé (D-002); et la phrase de couverture de la divulgation du 15
+  septembre, convention de ce document, manquait. Non bloquants : STD-3
+  (le commentaire de clôture du dix-huitième test attribue à l'étape 3 le
+  vidage d'`inscriptions`, qui vient de l'étape 2 et n'est pas décisif),
+  STD-4 (la prémisse « la pierre tombale n'étant pas en file » de la
+  branche non durable de `retirer` a un contre-exemple), STD-5 (une
+  `Error` sous `SupervisorJob` ne ferme pas le canal pour les demandes
+  suivantes : elle fait tomber le processus), STD-6 (KDoc de classe de
+  `SyncPusher` : « l'identifiant local pour les dictées » alors que la
+  clé est `<installation>:<ligne>`), STD-7 et STD-8 (observations, aucun
+  changement demandé); SPEC-1 (l'étape « deux installations » du plan
+  alpha passe même sans le correctif si les numéros de ligne diffèrent),
+  SPEC-2 (`RELAY_API.md` desktop « Android à suivre » — corrigé dans le
+  dépôt desktop la même nuit).
+
+### Surface et domaine
+
+- Documentation et commentaires (`.docs/REMOTE_RELAY_PRIVACY_SECURITY.md`,
+  `.docs/ANDROID_ALPHA_TEST_PLAN.md`, `SyncPusher.kt`,
+  `DictionarySyncCoordinator.kt`, `DictionarySyncCoordinatorTest.kt`, ce
+  registre). Aucun comportement changé.
+
+### Cause racine
+
+- Prose écrite pendant la boucle qui affirme plus que le code : une
+  négation (« rien ne désigne l'appareil ») là où le code ajoute un
+  pseudonyme; une prémisse (« pas en file ») qu'un entrelacement dément;
+  un mécanisme (« le canal se ferme ») que le runtime ne livre pas. Le
+  reviewer note que cinq constats sur dix, dont les deux bloquants, visent
+  du texte écrit pendant la boucle, et qu'aucun ne vise le comportement du
+  coordinateur ni du pousseur.
+
+### Correctif
+
+- STD-2 : le document de vie privée et le KDoc disent ce qui est vrai —
+  un pseudonyme stable par installation, sans matériel ni identité
+  derrière, qui distingue durablement les dictées d'une installation dans
+  l'historique partagé — et la phrase de couverture est ajoutée : donnée
+  nouvelle depuis le 19 septembre 2026, divulgation du 15 septembre tenue
+  pour couvrante, à confirmer par Olivier (le reversionnement du
+  consentement est sa décision).
+- STD-3 à STD-6 : commentaires ramenés à ce que le code fait, KDoc de
+  classe mise à jour; le mutant décrit dans l'entrée de la sixième ronde
+  corrigé de même. SPEC-1 : l'étape du plan alpha exige deux
+  installations avec cette version, chacune à sa première dictée.
+- STD-1 : non touché — budget de famille épuisé, décision d'Olivier
+  attendue.
+
+### Test de non-régression
+
+- Aucun : rien de comportemental n'a changé; la porte complète est
+  relancée (tests, lint, compilation QA, APK).
+
+### Ce qui l'aurait attrapé plus tôt
+
+- Relire chaque phrase nouvelle contre le code qu'elle décrit avant le
+  commit, en cherchant l'entrelacement qui la dément.

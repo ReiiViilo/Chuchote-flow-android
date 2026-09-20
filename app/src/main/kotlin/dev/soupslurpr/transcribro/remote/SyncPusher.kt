@@ -47,9 +47,9 @@ import kotlin.coroutines.resumeWithException
  * hors du chemin critique : un échec est journalisé (sans contenu) puis
  * oublié — sauf la pierre tombale, qui reste en file —, la vérité locale
  * (`chuchote.db`) n'attend jamais le cloud. Les deux points d'entrée sont
- * idempotents côté serveur — l'identifiant local pour les dictées, la paire
- * (entendu, remplacement) pour le dictionnaire — donc un renvoi ne crée
- * jamais de doublon.
+ * idempotents côté serveur — `<installation>:<ligne>` pour les dictées
+ * (voir `installationId`), la paire (entendu, remplacement) pour le
+ * dictionnaire — donc un renvoi ne crée jamais de doublon.
  *
  * Fils : une dictée ne fait que lancer une coroutine, l'appelant peut être
  * n'importe où. Une mutation du dictionnaire inscrit d'abord sa trace dans
@@ -91,10 +91,11 @@ class SyncPusher(context: Context) {
      * connaît que la plateforme et écraserait, en silence, la dictée de
      * l'autre (décision F du plan de synchronisation desktop; constat
      * externe Codex, 19 septembre 2026). Un identifiant tiré, jamais un
-     * identifiant matériel : rien au relais ne désigne l'appareil. Si
-     * l'écriture est refusée, il ne vaut que pour ce processus — les dictées
-     * de ce lancement restent distinctes entre elles, et le suivant en tire
-     * un autre. Lu sur le fil d'envoi, jamais sur le fil principal.
+     * identifiant matériel : un pseudonyme stable par installation, sans
+     * matériel ni identité derrière. Si l'écriture est refusée, il ne vaut
+     * que pour ce processus — les dictées de ce lancement restent distinctes
+     * entre elles, et le suivant en tire un autre. Lu sur le fil d'envoi,
+     * jamais sur le fil principal.
      */
     private val installationId: String by lazy {
         prefs.getString(KEY_INSTALLATION_ID, null)?.takeIf { it.isNotBlank() } ?: run {

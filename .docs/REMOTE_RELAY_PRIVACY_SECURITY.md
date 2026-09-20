@@ -114,7 +114,13 @@ replace_with)` pour le dictionnaire), donc un renvoi ne crée pas de doublon.
 Le `device_local_id` d'une dictée est le numéro de ligne local préfixé d'un
 identifiant d'installation tiré au hasard une fois (`chuchote_sync`), jamais
 un identifiant matériel : deux téléphones — ou une réinstallation — ne se
-recouvrent pas au relais, et rien de ce qui y part ne désigne l'appareil.
+recouvrent pas au relais. Il ne révèle ni le matériel ni qui dicte, mais
+c'est un pseudonyme stable : dans l'historique partagé (D-002, pairs de
+confiance), les dictées d'une installation se distinguent durablement de
+celles d'une autre. C'est une donnée nouvelle qui accompagne chaque dictée
+depuis le 19 septembre 2026 — sans identité ni matériel derrière, la
+divulgation du 15 septembre est tenue pour couvrante; c'est à Olivier de le
+confirmer, le reversionnement du consentement étant sa décision.
 
 Conséquence pour la vie privée : le **texte** des dictées quitte désormais
 l'appareil même quand la transcription a été faite localement, dès que le

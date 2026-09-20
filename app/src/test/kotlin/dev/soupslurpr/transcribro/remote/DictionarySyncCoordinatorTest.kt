@@ -664,9 +664,9 @@ class DictionarySyncCoordinatorTest {
         coordinateur.attendre()
 
         // Sans la garde `if (durable)` de `ecrireFile`, l'élagage refusé de
-        // l'étape 3 aurait vidé `inscriptions` et `reapprises` : le rejeu de
-        // l'étape 4 aurait envoyé la pierre tombale de xray — un mot encore
-        // vivant ici — devant celle de zulu, et le pair l'aurait perdu.
+        // l'étape 3 aurait vidé `reapprises` : le rejeu de l'étape 4 aurait
+        // envoyé la pierre tombale de xray — un mot encore vivant ici —
+        // devant celle de zulu, et le pair l'aurait perdu.
         assertEquals(listOf("Mot #retrait[zulu→Zulu:retrait]"), relais.recus)
         assertTrue(memoire.file.none { it.paire == ("zulu" to "Zulu") })
     }
