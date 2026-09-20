@@ -4,6 +4,7 @@ import dev.soupslurpr.transcribro.memory.EntreeDictionnaire
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -113,7 +114,8 @@ internal class DictionarySyncCoordinator(
     // Sous [verrou] : pour chaque paire en file, la génération à laquelle sa
     // pierre tombale a été inscrite dans ce processus. Une pierre tombale
     // héritée d'un processus précédent n'y figure pas et part toujours.
-    // Suit la file **durable** : une écriture refusée ne la modifie pas.
+    // Suit la file **durable** : une écriture refusée ne la modifie pas — sauf
+    // dans `retirer`, où une pierre tombale non inscrite n'a pas de génération.
     private val inscriptions = mutableMapOf<Pair<String, String>, Long>()
 
     // Sous [verrou] : les paires réapprises dont la pierre tombale n'a pas pu
@@ -124,27 +126,26 @@ internal class DictionarySyncCoordinator(
 
     private val travaux = Channel<suspend () -> Unit>(Channel.UNLIMITED)
 
-    init {
-        scope.launch {
-            try {
-                for (travail in travaux) {
-                    try {
-                        travail()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        journal("Travail de synchronisation abandonné (${e.javaClass.simpleName})")
-                    }
+    // Le fil d'envoi. Sa fin réveille une attente acceptée avant sa mort.
+    private val fil: Job = scope.launch {
+        try {
+            for (travail in travaux) {
+                try {
+                    travail()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    journal("Travail de synchronisation abandonné (${e.javaClass.simpleName})")
                 }
-            } finally {
-                // La portée est annulée : fermer le canal, pour qu'une demande
-                // ultérieure soit refusée et journalisée plutôt qu'acceptée
-                // dans le vide, et compter ce qui ne partira plus.
-                travaux.close()
-                var abandonnes = 0
-                while (travaux.tryReceive().isSuccess) abandonnes++
-                if (abandonnes > 0) journal("Fil d'envoi arrêté : $abandonnes travail(aux) en file ne partiront pas")
             }
+        } finally {
+            // La portée est annulée : fermer le canal, pour qu'une demande
+            // ultérieure soit refusée et journalisée plutôt qu'acceptée
+            // dans le vide, et compter ce qui ne partira plus.
+            travaux.close()
+            var abandonnes = 0
+            while (travaux.tryReceive().isSuccess) abandonnes++
+            if (abandonnes > 0) journal("Fil d'envoi arrêté : $abandonnes travail(aux) en file ne partiront pas")
         }
     }
 
@@ -158,10 +159,10 @@ internal class DictionarySyncCoordinator(
                 journal("Pierre tombale d'un mot réappris non retirée de la file (écriture refusée) : tenue pour vivante")
             }
             invaliderEmpreinte()
-        }
-        demander {
-            val cible = destination() ?: return@demander
-            envoyer(cible, DICTIONARY_PATH, SyncPayloads.dictionaryEntry(paire.first, paire.second), "Mot #ajout", SyncTimeouts.READ_TIMEOUT_MS)
+            demander {
+                val cible = destination() ?: return@demander
+                envoyer(cible, DICTIONARY_PATH, SyncPayloads.dictionaryEntry(paire.first, paire.second), "Mot #ajout", SyncTimeouts.READ_TIMEOUT_MS)
+            }
         }
     }
 
@@ -172,27 +173,31 @@ internal class DictionarySyncCoordinator(
      * inscrite, auquel cas elle part aussitôt, une seule fois.
      */
     fun retirer(paire: Pair<String, String>): Boolean {
-        val borne = synchronized(verrou) {
+        val durable = synchronized(verrou) {
             invaliderEmpreinte()
             reapprises -= paire // supprimé de nouveau : sa pierre tombale compte
             if (!ecrireFile(PendingTombstones.ajouter(lireFile(), paire, horloge()))) {
+                // Pas en file, donc pas de génération : elle part aussitôt, une fois.
                 inscriptions.remove(paire)
-                null
+                false
             } else {
                 inscriptions[paire] = generation
-                generation
+                // Borne et mise en file sous le même verrou que l'inscription :
+                // un rejeu demandé pendant cette section est mis en file
+                // derrière celui-ci, avec une borne qui couvre la pierre tombale.
+                val borne = generation
+                demander { rejouer(borne) { emptySet() } }
+                true
             }
         }
-        if (borne == null) {
+        if (!durable) {
             journal("Pierre tombale non inscrite (écriture des préférences refusée) : envoi immédiat seulement")
             demander {
                 val cible = destination() ?: return@demander
                 envoyer(cible, DICTIONARY_PATH, SyncPayloads.dictionaryTombstone(paire.first, paire.second), "Mot #retrait", SyncTimeouts.READ_TIMEOUT_MS)
             }
-            return false
         }
-        demander { rejouer(borne) { emptySet() } }
-        return true
+        return durable
     }
 
     /**
@@ -203,10 +208,13 @@ internal class DictionarySyncCoordinator(
      * republié.
      */
     fun synchroniserAuDemarrage(dictionnaire: () -> List<EntreeDictionnaire>) {
-        val borne = synchronized(verrou) { generation }
-        demander {
-            rejouer(borne) { dictionnaire().map { it.entendu.trim() to it.remplacerPar.trim() }.toSet() }
-            republierSiChange(dictionnaire)
+        synchronized(verrou) {
+            // Sous le verrou avec la borne, comme `retirer` : voir `rejouer`.
+            val borne = generation
+            demander {
+                rejouer(borne) { dictionnaire().map { it.entendu.trim() to it.remplacerPar.trim() }.toSet() }
+                republierSiChange(dictionnaire)
+            }
         }
     }
 
@@ -216,8 +224,15 @@ internal class DictionarySyncCoordinator(
      */
     internal suspend fun attendreLaFin() {
         val fin = CompletableDeferred<Unit>()
-        if (!demander { fin.complete(Unit) }) fin.complete(Unit)
-        fin.await()
+        if (!demander { fin.complete(Unit) }) return
+        // Acceptée, puis la portée meurt avant son tour : le fil jette ce qui
+        // reste sans le compléter. Sa fin complète l'attente.
+        val fermeture = fil.invokeOnCompletion { fin.complete(Unit) }
+        try {
+            fin.await()
+        } finally {
+            fermeture.dispose()
+        }
     }
 
     /**
@@ -255,7 +270,11 @@ internal class DictionarySyncCoordinator(
             // Ni mutation pendant les envois, ni pierre tombale en file : sinon
             // ce que le relais a accepté ne décrit pas le dictionnaire, et
             // le démarrage suivant doit republier.
-            if (generation != depart || lireFile().isNotEmpty()) return
+            if (generation != depart) return
+            if (lireFile().isNotEmpty()) {
+                journal("Empreinte non inscrite : une pierre tombale est en file, le dictionnaire repartira au prochain démarrage")
+                return
+            }
             if (!memoire.ecrire(KEY_DICTIONARY_SIGNATURE, signature)) {
                 journal("Empreinte non inscrite : le dictionnaire repartira au prochain démarrage")
             }
@@ -308,15 +327,16 @@ internal class DictionarySyncCoordinator(
             // Le dictionnaire vivant est lu ici, sous le verrou. Ce qui tient :
             // une pierre tombale inscrite à une génération plus grande que la
             // borne appartient à une suppression demandée après ce rejeu, et
-            // n'est pas jugée. Ce qui ne tient pas encore : la borne est lue
-            // sous le verrou mais la mise en file se fait hors de lui, donc un
-            // rejeu demandé entre l'inscription d'une pierre tombale et la mise
-            // en file de son travail peut la voir à sa propre génération et,
-            // si la ligne n'est pas encore effacée, l'élaguer. Inatteignable
-            // tant que `synchroniserAuDemarrage` n'a qu'un appelant (l'init du
-            // magasin, sur le même fil que les suppressions); à fermer sur
-            // décision d'Olivier — `demander` sous le verrou, ou la boîte
-            // d'envoi transactionnelle.
+            // n'est pas jugée; et comme borne et mise en file sont prises sous
+            // le même verrou que l'inscription, un rejeu demandé pendant une
+            // suppression est mis en file derrière le travail de celle-ci,
+            // avec une borne qui la couvre — sa pierre tombale part avant
+            // d'être jugée. Ce qui reste entre les deux magasins : un rejeu
+            // demandé après la suppression et parti avant son `DELETE` lirait
+            // la paire vivante. Impossible sur l'appareil, où l'inscription et
+            // le `DELETE` ont lieu sur le même fil sérialisé du magasin, sans
+            // suspension entre eux; la boîte d'envoi transactionnelle
+            // (tranche 1) rendra l'ordre atomique par construction.
             val gardees = PendingTombstones.aRejouer(anciennes, exclure() + reapprises, maintenant)
             if (gardees.size != anciennes.size && !ecrireFile(enAttente.filter { it in gardees || it in nouvelles })) {
                 journal("File de pierres tombales non réécrite (écriture refusée) : élagage repris au prochain rejeu")
@@ -354,6 +374,7 @@ internal class DictionarySyncCoordinator(
             journal("File de pierres tombales illisible : abandonnée, le desktop peut garder des mots supprimés ici")
             memoire.effacer(KEY_PENDING_TOMBSTONES)
             inscriptions.clear()
+            reapprises.clear()
             emptyList()
         }
 
@@ -361,7 +382,9 @@ internal class DictionarySyncCoordinator(
      * Sous [verrou]. Vrai si la file est durable. Les inscriptions et les
      * paires réapprises suivent la file **durable** : une paire sortie n'a
      * plus de génération ni rien à compenser; une écriture refusée ne change
-     * rien à ce qu'elles décrivent.
+     * rien à ce qu'elles décrivent — à une exception près, dans `retirer` :
+     * une pierre tombale qui n'a pas pu entrer en file n'a pas de génération,
+     * elle part aussitôt hors de tout rejeu.
      */
     private fun ecrireFile(file: List<TombaleEnAttente>): Boolean {
         val durable = memoire.ecrire(KEY_PENDING_TOMBSTONES, PendingTombstones.encode(file))

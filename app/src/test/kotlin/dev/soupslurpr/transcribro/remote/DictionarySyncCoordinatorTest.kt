@@ -3,7 +3,9 @@ package dev.soupslurpr.transcribro.remote
 import dev.soupslurpr.transcribro.memory.EntreeDictionnaire
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -33,11 +35,16 @@ class DictionarySyncCoordinatorTest {
         @Volatile
         var ecritureRefusee = false
 
+        /** Appelé au début de chaque écriture, sur le fil qui écrit — donc sous le verrou du coordinateur. */
+        @Volatile
+        var surEcriture: (() -> Unit)? = null
+
         @Synchronized
         override fun lire(cle: String): String? = table[cle]
 
         @Synchronized
         override fun ecrire(cle: String, valeur: String): Boolean {
+            surEcriture?.invoke()
             if (ecritureRefusee) return false
             table[cle] = valeur
             return true
@@ -559,6 +566,60 @@ class DictionarySyncCoordinatorTest {
         assertTrue(journal.any { it.startsWith("Fil d'envoi arrêté : 1 travail(aux)") })
         assertTrue(journal.any { it == "Travail de synchronisation refusé : fil d'envoi arrêté" })
         coordinateur.attendre() // ne pend pas : plus de fil, rien à attendre
+    }
+
+    @Test
+    fun `un rejeu demande pendant l inscription d une suppression part derriere elle`() = runBlocking {
+        val memoire = Memoire()
+        val relais = Relais()
+        val coordinateur = coordinateur(memoire, relais)
+        // La ligne n'est pas encore effacée quand le démarrage lit le dictionnaire.
+        val vivantes = listOf(entree(1, "kilo", "Kilo"))
+        var demarrage: Thread? = null
+        memoire.surEcriture = {
+            // Pendant l'inscription de la pierre tombale, sous le verrou : un
+            // démarrage est demandé depuis un autre fil, qui attend le verrou.
+            memoire.surEcriture = null
+            val fil = Thread { coordinateur.synchroniserAuDemarrage { vivantes } }.apply { start() }
+            demarrage = fil
+            val limite = System.currentTimeMillis() + 5_000
+            while (fil.state != Thread.State.BLOCKED && System.currentTimeMillis() < limite) Thread.sleep(1)
+            assertEquals(Thread.State.BLOCKED, fil.state)
+        }
+        assertTrue(coordinateur.retirer("kilo" to "Kilo"))
+        demarrage!!.join(5_000)
+        coordinateur.attendre()
+
+        // La pierre tombale part d'abord, par son propre travail, mis en file
+        // avant que le verrou soit rendu; le rejeu du démarrage, derrière lui
+        // avec une borne qui la couvre, ne l'a pas élaguée comme « redevenue
+        // vivante ». (Sans cet ordre, le rejeu partait parfois devant et la
+        // suppression était perdue : file vide, rien d'envoyé.)
+        assertEquals("Mot #retrait[kilo→Kilo:retrait]", relais.recus.first())
+        assertTrue(memoire.file.isEmpty())
+    }
+
+    @Test
+    fun `une attente acceptee avant la mort de la portee se termine`() = runBlocking {
+        val memoire = Memoire()
+        val relais = Relais()
+        val portee = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val coordinateur = DictionarySyncCoordinator(
+            memoire = memoire,
+            destination = { RemoteRequestTarget(baseUrl = "https://relais.test", token = "jeton") },
+            envoyer = { cible, path, payload, label, timeout -> relais.envoyer(cible, path, payload, label, timeout) },
+            scope = portee,
+        )
+        val (enVol, liberer) = relais.bloquerLeProchainEnvoi()
+
+        coordinateur.ajouter("whisky" to "Whisky") // occupe le fil d'envoi
+        withTimeout(10_000) { enVol.await() }
+        // Acceptée tout de suite (UNDISPATCHED), derrière l'envoi en vol.
+        val attente = async(start = CoroutineStart.UNDISPATCHED) { coordinateur.attendreLaFin() }
+        portee.cancel() // le fil meurt avant le tour de l'attente
+        liberer.complete(Unit)
+        withTimeout(10_000) { attente.await() } // se termine quand même
+        assertTrue(relais.recus.isEmpty())
     }
 
     @Test

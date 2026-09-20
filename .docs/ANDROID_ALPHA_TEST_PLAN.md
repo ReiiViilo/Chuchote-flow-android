@@ -166,6 +166,11 @@ Synchronisation vers le relais (`/api/sync/*`), sur le même serveur de test :
   relancer l'app : la pierre tombale part au démarrage (`SyncPusher` dans
   `logcat` : « Mot #retrait synchronisé »), et rien ne repart au démarrage
   suivant;
+- [ ] contre un serveur de test volontairement lent, retirer le consentement
+  pendant un envoi de dictionnaire (ajout, pierre tombale ou lot) : la
+  connexion est interrompue (`logcat` : « Sync interrompue … consentement
+  retiré »), aucune empreinte n'est inscrite, la pierre tombale reste en
+  file et repart quand le consentement revient;
 - [ ] sur une installation QA dont le relais n'a **jamais** été configuré —
   donc une seconde installation, ou après effacement des données QA, **avant**
   toute configuration du relais, car le drapeau `sync_configured` posé par les

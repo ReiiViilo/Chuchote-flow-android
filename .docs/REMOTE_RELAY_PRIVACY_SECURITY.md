@@ -97,7 +97,10 @@ paires — les plus anciennes cèdent la place — et une pierre tombale de plus
 suppression si vieille effacerait un mot que le desktop a pu réapprendre depuis
 (`PendingTombstones`). Un consentement retiré ne vide pas la file : rien ne
 part tant qu'il est absent, et la péremption la borne (arbitrage d'Olivier du
-16 septembre 2026). Le verrou de la file n'est jamais tenu pendant un appel
+16 septembre 2026). Retiré pendant un envoi, il le coupe : la connexion est
+fermée depuis le fil qui révoque (`RemoteConsentGuard`, comme pour l'audio),
+ce qui n'est pas parti reste dû, et les octets déjà transmis sont
+irrévocables. Le verrou de la file n'est jamais tenu pendant un appel
 réseau; les pierres tombales acceptées sont retirées de la file courante, pas
 remplacées par l'instantané du départ. Sans cela,
 une suppression faite hors ligne laisserait le desktop réécrire le mot

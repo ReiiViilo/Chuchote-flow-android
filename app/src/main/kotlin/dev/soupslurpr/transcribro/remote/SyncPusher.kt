@@ -6,13 +6,20 @@ import android.util.Log
 import androidx.core.content.edit
 import dev.soupslurpr.transcribro.memory.EntreeDictionnaire
 import dev.soupslurpr.transcribro.preferences.PrivacyConsent
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * Pousse vers le cerveau commun Chuchote Flow ce que l'appareil vient
@@ -163,6 +170,14 @@ class SyncPusher(context: Context) {
      * bruit — si la synchronisation n'est pas consentie; faux avec un journal
      * expurgé (jamais le message brut, qui peut porter un nom d'hôte) sur
      * toute défaillance.
+     *
+     * Le consentement est relu au dernier moment, dans la coroutine, puis
+     * observé pendant tout l'envoi par le même garde que la transcription
+     * distante : retiré pendant l'envoi, la connexion est fermée depuis le
+     * fil qui révoque, sans attendre le délai de lecture. Ce qui n'est pas
+     * parti reste dû — faux, comme un relais injoignable : une pierre tombale
+     * reste en file, un lot n'inscrit pas d'empreinte —; les octets déjà
+     * transmis sont tenus pour irrévocables.
      */
     private suspend fun send(
         target: RemoteRequestTarget,
@@ -172,36 +187,94 @@ class SyncPusher(context: Context) {
         readTimeoutMs: Int,
     ): Boolean {
         noterRelaisConfigure()
-        // Le consentement est relu au dernier moment, dans la coroutine :
-        // une révocation entre l'apprentissage et l'envoi est respectée.
         if (!PrivacyConsent.isAccepted(applicationContext)) return false
-        return runCatching {
-            val url = URL(target.baseUrl.trimEnd('/') + path)
-            val connection = url.openConnection() as HttpURLConnection
+        return try {
+            RemoteConsentGuard.run(
+                consent = PrivacyConsent.acceptanceFlow(applicationContext),
+                upload = { post(target, path, payload, label, readTimeoutMs) },
+            )
+        } catch (error: RemoteConsentRevokedException) {
+            // Une annulation de la portée elle-même reste une annulation : le
+            // fil d'envoi ne doit pas la prendre pour un refus du relais.
+            currentCoroutineContext().ensureActive()
+            Log.w(TAG, "Sync interrompue pour $label : consentement retiré")
+            false
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            Log.w(TAG, "Sync impossible pour $label (${RemoteRelayDiagnostic.transportFailure(error)})")
+            false
+        }
+    }
+
+    /**
+     * L'envoi HTTP lui-même. `HttpURLConnection` est bloquant et n'observe pas
+     * `Job.cancel()` : le handler d'annulation déconnecte la socket depuis le
+     * fil qui annule, ce qui débloque `outputStream` et `responseCode` sans
+     * attendre le délai. Vrai si le relais a accepté, faux sur un code hors
+     * 2xx; une panne de transport lève.
+     */
+    private suspend fun post(
+        target: RemoteRequestTarget,
+        path: String,
+        payload: JSONObject,
+        label: String,
+        readTimeoutMs: Int,
+    ): Boolean = withContext(Dispatchers.IO) {
+        suspendCancellableCoroutine { continuation ->
+            val connectionSlot = CancellableConnectionSlot<HttpURLConnection> {
+                it.disconnect()
+            }
+            continuation.invokeOnCancellation {
+                connectionSlot.cancel()
+            }
+
             try {
-                connection.requestMethod = "POST"
-                connection.connectTimeout = SyncTimeouts.CONNECT_TIMEOUT_MS
-                connection.readTimeout = readTimeoutMs
-                connection.doOutput = true
-                connection.setRequestProperty("Content-Type", "application/json")
-                connection.setRequestProperty("Authorization", "Bearer ${target.token}")
+                val url = URL(target.baseUrl.trimEnd('/') + path)
+                val connection = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = SyncTimeouts.CONNECT_TIMEOUT_MS
+                    readTimeout = readTimeoutMs
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json")
+                    setRequestProperty("Authorization", "Bearer ${target.token}")
+                }
+                if (!connectionSlot.attach(connection)) return@suspendCancellableCoroutine
+
+                // Dernière relecture synchrone avant que le premier octet — un
+                // mot du dictionnaire personnel — quitte l'appareil.
+                val mayOpenRequestBody = RemoteUploadGate.canOpenRequestBody(
+                    consentAccepted = PrivacyConsent.isAcceptedBlocking(applicationContext),
+                    coroutineActive = continuation.isActive,
+                )
+                if (!mayOpenRequestBody) {
+                    if (continuation.isActive) {
+                        continuation.cancel(
+                            RemoteConsentRevokedException("Consentement retiré avant l'envoi de synchronisation"),
+                        )
+                    }
+                    return@suspendCancellableCoroutine
+                }
+
                 connection.outputStream.use {
                     it.write(payload.toString().toByteArray(Charsets.UTF_8))
                 }
                 val code = connection.responseCode
-                if (code in 200..299) {
+                val accepted = code in 200..299
+                if (accepted) {
                     Log.d(TAG, "$label synchronisé")
-                    true
                 } else {
                     Log.w(TAG, "Sync refusée pour $label: HTTP $code")
-                    false
                 }
+                if (continuation.isActive) continuation.resume(accepted)
+            } catch (error: Throwable) {
+                // Si disconnect() a réveillé l'I/O, la continuation porte déjà
+                // la CancellationException et l'IOException ne doit pas l'écraser.
+                if (continuation.isActive) continuation.resumeWithException(error)
             } finally {
-                connection.disconnect()
+                connectionSlot.close()
             }
-        }.onFailure { error ->
-            Log.w(TAG, "Sync impossible pour $label (${RemoteRelayDiagnostic.transportFailure(error)})")
-        }.getOrDefault(false)
+        }
     }
 
     private companion object {

@@ -14,4 +14,12 @@ class SyncTimeoutsTest {
         assertTrue(SyncTimeouts.READ_TIMEOUT_MS > SyncTimeouts.RELAY_MAX_DURATION_MS)
         assertTrue(SyncTimeouts.BATCH_READ_TIMEOUT_MS > SyncTimeouts.RELAY_MAX_DURATION_MS)
     }
+
+    @Test
+    fun `la marge couvre un demarrage a froid du relais`() {
+        // Le budget du relais ne court qu'à l'entrée dans la fonction; le
+        // délai de lecture, dès l'envoi du corps.
+        assertTrue(SyncTimeouts.READ_TIMEOUT_MS - SyncTimeouts.RELAY_MAX_DURATION_MS >= 15_000)
+        assertTrue(SyncTimeouts.BATCH_READ_TIMEOUT_MS - SyncTimeouts.RELAY_MAX_DURATION_MS >= 15_000)
+    }
 }

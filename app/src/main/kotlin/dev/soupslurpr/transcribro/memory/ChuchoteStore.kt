@@ -494,10 +494,18 @@ class ChuchoteStore private constructor(
         val mot = entendu.trim()
         if (mot.isEmpty()) return
         scope.launch {
-            db.writableDatabase.insert("dictionnaire", null, ContentValues().apply {
+            val ligne = db.writableDatabase.insert("dictionnaire", null, ContentValues().apply {
                 put("entendu", mot)
                 put("remplacer_par", remplacerPar.trim())
             })
+            if (ligne == -1L) {
+                // `insert` rend -1 sans lever (disque plein, contrainte) : rien
+                // n'est en base, rien n'est annoncé au relais — il y gagnerait
+                // un mot que l'appareil ne connaît pas et qu'aucune ligne ne
+                // permettrait de retirer.
+                Log.w(TAG_DICTIONNAIRE, "Ajout refusé par SQLite, rien n'est annoncé au relais")
+                return@launch
+            }
             rechargerDictionnaire()
             // Publier depuis le magasin plutôt que depuis l'appelant : les deux
             // chemins d'ajout — pop-up de correction et saisie manuelle — sont

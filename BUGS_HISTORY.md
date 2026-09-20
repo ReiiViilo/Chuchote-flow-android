@@ -1018,7 +1018,10 @@ suppression est signalée).
   `inscriptions` ne suit plus que la file durable, chaque refus est
   journalisé, et un mot réappris dont la pierre tombale n'a pas pu être
   retirée est tenu pour vivant par tout rejeu (`reapprises`) jusqu'à une
-  écriture réussie — testé.
+  écriture réussie — seul ce dernier cas est testé; les refus journalisés
+  et la garde `if (durable)` de `ecrireFile` n'ont pas de scénario
+  discriminant atteignable par l'API (toute divergence converge vers le
+  même état du relais).
 - `runCatching` avalait `CancellationException` avant un `DELETE` :
   relancée.
 - `attendreLaFin` pendait sur une portée morte : `demander` rend son succès,
@@ -1040,11 +1043,14 @@ suppression est signalée).
 ### Test de non-régression
 
 `SyncTimeoutsTest` (contrat des délais); `DictionarySyncCoordinatorTest`,
-seize scénarios : « un rejeu de demarrage n elague pas … » prolongé
-(empreinte absente, puis le démarrage suivant republie le mot), « changer
-puis couper le relais entre deux pierres tombales … », « un mot reappris
-dont la pierre tombale n a pu etre retiree … », attente sur portée morte;
-`PierreTombaleTest` (trois scénarios).
+quinze scénarios (deux nouveaux, trois prolongés) : « un rejeu de demarrage
+n elague pas … » prolongé (empreinte absente, puis le démarrage suivant
+republie le mot), « la republication lit le dictionnaire quand elle part … »
+(n'attend plus d'empreinte : la pierre tombale était encore en file quand
+le lot s'est achevé), « changer puis couper le relais entre deux pierres
+tombales … », « un mot reappris dont la pierre tombale n a pu etre
+retiree … », attente sur portée morte; `PierreTombaleTest` (trois
+scénarios).
 
 ### Ce qui reste à prouver sur l'appareil
 
@@ -1064,3 +1070,109 @@ dont la pierre tombale n a pu etre retiree … », attente sur portée morte;
   le signal que la conception (pierre tombale dans les préférences, ligne
   dans SQLite, aucun ordre atomique entre les deux) est en cause, pas la
   vigilance.
+
+## 2026-09-19 — Cinquième ronde : consentement retiré pendant un envoi, ajout publié sans être en base, borne et mise en file sous le même verrou
+
+### Symptôme observable
+
+- Aucun retour d'appareil : deux défauts établis par lecture du code lors de
+  la cinquième revue externe (Codex, 19 septembre 2026, `--base cf38768`,
+  sur 7e9e727), verdict « needs-attention — Do not ship: dictionary sync can
+  resurrect deleted entries, upload after consent revocation, and publish
+  failed local inserts. » Le troisième constat de cette ronde (`[high] Early
+  transport failures still allow writes to overtake deletions`) est tranché,
+  pas corrigé ici : voir plus bas. Sur le même commit, la revue
+  `code-reviewer` (`decision_required` : troisième ronde consécutive de
+  constats sur du code écrit dans la boucle) — Olivier a tranché le soir
+  même : continuer en un seul passage, boîte d'envoi transactionnelle en
+  tranche 1.
+- Attendus sur l'appareil s'ils s'étaient produits : le consentement retiré
+  pendant qu'un envoi de dictionnaire était bloqué (connexion lente) ne
+  l'interrompait pas — l'envoi partait quand même, à la différence de la
+  transcription distante, gardée depuis longtemps; un ajout dont l'insertion
+  SQLite échouait (`insert` rend -1 sans lever, disque plein) était publié
+  au relais, qui gagnait un mot absent de l'appareil et qu'aucune ligne ne
+  permettait de retirer.
+
+### Surface et domaine
+
+- `SyncPusher.send` (tout envoi vers `/api/sync/*`),
+  `ChuchoteStore.ajouterEntree`, `DictionarySyncCoordinator` (borne des
+  rejeux, attente, empreinte, file illisible), `SyncTimeouts`.
+
+### Cause racine
+
+- Le consentement était relu une fois avant d'ouvrir la connexion, puis plus
+  jamais; `SyncPusher` a sa propre portée, sans observateur du consentement
+  ni handler d'annulation qui ferme la connexion bloquante.
+- Le résultat de `insert` était ignoré, et la publication suivait la
+  relecture du dictionnaire, réussie même quand l'insertion ne l'était pas.
+- La borne d'un rejeu était lue sous le verrou mais son travail mis en file
+  hors de lui (famille « rejeu qui élague une pierre tombale vivante »,
+  gelée deux rondes durant en attente de décision).
+
+### Correctif
+
+- `send` passe par `RemoteConsentGuard` — le garde de la transcription
+  distante — et `post` est une `suspendCancellableCoroutine` dont le handler
+  ferme la connexion (`CancellableConnectionSlot`), avec la relecture
+  synchrone de `RemoteUploadGate` juste avant le premier octet. Un
+  consentement retiré pendant l'envoi le coupe et compte comme un refus :
+  pierre tombale en file, pas d'empreinte, journal « consentement retiré ».
+  Une annulation de la portée elle-même reste une annulation
+  (`ensureActive`).
+- `ajouterEntree` ne recharge ni ne publie rien si `insert` rend -1;
+  avertissement journalisé sans contenu.
+- Décision 1 d'Olivier : dans `retirer` et `synchroniserAuDemarrage` (et
+  `ajouter`, par uniformité), la mise en file se fait sous le verrou, avec la
+  borne. Un rejeu demandé pendant une suppression part derrière son travail,
+  avec une borne qui la couvre. Le commentaire de `rejouer` et
+  `DATA_AND_PERSISTENCE.md` disent ce qui reste entre les deux magasins et
+  pourquoi c'est inatteignable sur l'appareil (même fil sérialisé, sans
+  suspension entre l'inscription et le `DELETE`).
+- Constats du `code-reviewer` pris dans le même passage : `reapprises` vidé
+  avec `inscriptions` quand la file est illisible et l'exception de `retirer`
+  nommée dans le commentaire de `ecrireFile`; le saut d'empreinte pour cause
+  de pierre tombale en file est journalisé; la marge des délais passe de 5 s
+  à 15 s (`COLD_START_MARGIN_MS`) et dit ce qu'elle couvre — le budget du
+  relais ne court qu'à l'entrée dans la fonction; `attendreLaFin` se termine
+  aussi quand la portée meurt après avoir accepté l'attente (fin du fil
+  observée); l'amplification d'une pierre tombale indélivrable est
+  documentée; « effacée par toute mutation » devient « toute mutation
+  annoncée au relais »; le paragraphe `chuchote_sync` est découpé par sujet;
+  l'entrée précédente de ce registre dit quinze scénarios, pas seize, et le
+  « — testé » ne couvre plus que ce qui l'est.
+- Tranché, pas corrigé (D-006, tranche 1, décision d'Olivier) : une panne de
+  transport après l'envoi du corps rend faux aussitôt, sans attendre les
+  30 s du relais, qui peut encore écrire; une pierre tombale envoyée ensuite
+  peut être dépassée. Ce n'est pas un délai qui ferme cela — Codex le dit —
+  mais une version de mutation portée par l'appareil et refusée par le
+  relais si plus ancienne. Les documents le disent tel quel.
+
+### Test de non-régression
+
+- `DictionarySyncCoordinatorTest`, dix-sept scénarios : « un rejeu demande
+  pendant l inscription d une suppression part derriere elle » (un démarrage
+  demandé depuis un autre fil pendant l'inscription, bloqué sur le verrou :
+  la pierre tombale part la première, la file est vide — sans l'ordre sous
+  le verrou, le démarrage partait parfois devant et la suppression était
+  perdue; le test ne tue le mutant qu'à la course, la garantie est celle du
+  verrou) et « une attente acceptee avant la mort de la portee se termine »
+  (déterministe : sans l'observation de la fin du fil, l'attente pendait).
+  `SyncTimeoutsTest` : marge d'au moins 15 s.
+- Aucun test JVM pour `SyncPusher` ni `ajouterEntree` : `Context`, DataStore
+  et `HttpURLConnection` sont hors du harnais JVM (le coordinateur est testé
+  avec un `envoyer` en mémoire); le garde lui-même a `RemoteConsentGuardTest`,
+  `CancellableConnectionSlotTest` et `RemoteUploadGateTest`. Sur l'appareil :
+  étape ajoutée au § 6 du plan de test alpha (retrait du consentement
+  pendant un envoi de dictionnaire).
+
+### Ce qui l'aurait attrapé plus tôt
+
+- Le garde du consentement existait pour l'audio; un second chemin qui fait
+  quitter des données personnelles à l'appareil devait l'emprunter dès son
+  écriture — « même frontière que le relais » était écrit dans le KDoc sans
+  être tenu. Le résultat d'un `insert` ignoré est un lint classique
+  (`CheckResult`), absent de la configuration. Quant à la borne, la règle
+  « ce qui doit être ordonné se décide sous le même verrou » aurait dû être
+  appliquée à la mise en file dès que la borne est née.
