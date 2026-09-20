@@ -67,7 +67,7 @@ et vérifiées sur la JVM — avec le `org.json` de référence (`testImplementa
 
 | Point d'entrée | Quand | Ce qui part |
 |---|---|---|
-| `POST /api/sync/dictations` | chaque dictée terminée, depuis `MainRecognitionService` | `device="android"`, identifiant local de la dictée, `created_at` ISO UTC, texte brut STT, texte final après substitutions, durée, source |
+| `POST /api/sync/dictations` | chaque dictée terminée, depuis `MainRecognitionService` | `device="android"`, identifiant local de la dictée préfixé de l'identifiant d'installation, `created_at` ISO UTC, texte brut STT, texte final après substitutions, durée, source |
 | `POST /api/sync/dictionary` | à l'ajout d'une entrée; à sa suppression (pierre tombale `deleted=true`, inscrite en file **avant** que la ligne soit effacée); au démarrage du store, les pierres tombales encore en file puis la liste entière si son empreinte SHA-256 — liée à l'adresse du relais, effacée par toute mutation du dictionnaire — n'est pas celle que **ce** relais a déjà acceptée : un relais nouvellement configuré reçoit donc tout le dictionnaire | `heard`, `replace_with`, `deleted` — par lots de 500 entrées au plus (plafond du relais), autant de lots que nécessaire, tous adressés au relais lu au départ de la republication; l'empreinte n'est retenue que si tous les lots sont passés et qu'aucune mutation n'a couru pendant les envois |
 
 Frontières, identiques au relais de transcription : rien ne part sans relais

@@ -68,14 +68,7 @@ class SyncPusher(context: Context) {
 
     private val coordinateur by lazy {
         DictionarySyncCoordinator(
-            memoire = object : SyncMemoire {
-                override fun lire(cle: String): String? = prefs.getString(cle, null)
-
-                // `commit()` et son résultat, pas l'aide KTX qui le jette : une
-                // écriture refusée par le disque doit se savoir.
-                override fun ecrire(cle: String, valeur: String): Boolean = prefs.edit().putString(cle, valeur).commit()
-                override fun effacer(cle: String): Boolean = prefs.edit().remove(cle).commit()
-            },
+            memoire = PreferencesSyncMemoire(prefs),
             destination = { settings.snapshot().requestTarget },
             envoyer = { cible, path, payload, label, readTimeoutMs -> send(cible, path, payload, label, readTimeoutMs) },
             scope = scope,

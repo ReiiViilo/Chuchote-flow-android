@@ -1262,8 +1262,8 @@ scénarios).
   suppression durable d'un autre mot une fois disque et relais revenus —
   le relais ne reçoit que la pierre tombale du second mot. Mutant :
   retirer `if (durable)` de `ecrireFile` — l'élagage refusé vide alors
-  `reapprises`, et le rejeu envoie la pierre tombale
-  d'un mot encore vivant ici, que le pair perd.
+  `reapprises`, et le rejeu envoie la pierre tombale d'un mot encore
+  vivant ici, que le pair perd.
 - `SyncPayloadsTest` : `device_local_id` = `inst:42`; sans identifiant
   d'installation, le numéro de ligne part tel quel.
 
@@ -1316,8 +1316,9 @@ scénarios).
   vidage d'`inscriptions`, qui vient de l'étape 2 et n'est pas décisif),
   STD-4 (la prémisse « la pierre tombale n'étant pas en file » de la
   branche non durable de `retirer` a un contre-exemple), STD-5 (une
-  `Error` sous `SupervisorJob` ne ferme pas le canal pour les demandes
-  suivantes : elle fait tomber le processus), STD-6 (KDoc de classe de
+  `Error` sous `SupervisorJob` fait tomber le processus : le `finally`
+  ferme bien le canal, mais aucune demande ne suivra), STD-6 (KDoc de
+  classe de
   `SyncPusher` : « l'identifiant local pour les dictées » alors que la
   clé est `<installation>:<ligne>`), STD-7 et STD-8 (observations, aucun
   changement demandé); SPEC-1 (l'étape « deux installations » du plan
@@ -1367,3 +1368,92 @@ scénarios).
 
 - Relire chaque phrase nouvelle contre le code qu'elle décrit avant le
   commit, en cherchant l'entrelacement qui la dément.
+
+## 2026-09-20 — Huitième ronde : `commit()` refusé laissait la valeur en mémoire, le modèle « écriture refusée = file inchangée » était faux sur l'appareil
+
+### Symptôme observable
+
+- Aucun retour d'appareil. Huitième revue externe (Codex, 20 septembre
+  2026, `--base cf38768`, sur 464b48e) : « needs-attention — Do not ship:
+  transport failures can permanently resurrect deleted dictionary
+  entries. The 52 existing compiled JVM tests pass; no fresh build was
+  run. » Un seul constat, `[high] A failed connection does not mean the
+  relay stopped writing` (`SyncPusher.kt:232-234`) : « If an addition
+  reaches the relay but the connection drops before its response, this
+  catch immediately returns false and releases the send queue. A
+  subsequent tombstone can succeed and be removed from persistent storage
+  before the original relay request commits deleted=false. The relay uses
+  unconditional last-write-wins upserts, so the deleted entry is
+  resurrected. Startup cannot repair this: the entry is absent locally and
+  its tombstone is gone. The 45-second read timeout does not protect
+  against an earlier connection failure. This remains unfixed despite the
+  documented D-006 deferral. » — D-006, tranché (version de mutation,
+  tranche 1) : consigné, non corrigé ici. Sur le même commit,
+  `code-reviewer` : `decision_required` — STD-1/F-COV toujours en attente
+  de la décision d'Olivier; et un bloquant nouveau, STD-A (famille neuve,
+  « modèle de mémoire des préférences ») : `SharedPreferences.commit()`
+  applique la valeur en mémoire avant d'écrire le disque et ne rend que le
+  résultat du disque (source AOSP, `SharedPreferencesImpl`); après un
+  refus, `getString` rend la valeur refusée pour le reste du processus.
+  Le coordinateur, son double de test (`ecrire` rend faux **sans** écrire)
+  et trois documents supposaient l'inverse. Scénario du reviewer, sur
+  l'appareil : disque en refus, l'utilisateur supprime `xray` — la pierre
+  tombale entre en file malgré le refus, `inscriptions.remove` lui ôte sa
+  génération, un rejeu déjà demandé la juge (`0 <= borne`), la lit vivante
+  avant le `DELETE` du magasin et l'élague; l'envoi immédiat, en file
+  derrière, échoue (relais éteint) : suppression perdue, le desktop
+  réécrit le mot indéfiniment. Non bloquants : STD-B (le tableau « Ce qui
+  part » de la doc de vie privée énonçait `device_local_id` sans le
+  préfixe), STD-C (la propriété `SupervisorJob` vient du `scope` passé au
+  constructeur — observation), STD-D (le `finally` s'ouvre sur « La portée
+  est annulée » alors qu'il est aussi atteint par l'`Error` — préexistant),
+  STD-E (ligne courte dans ce registre), SPEC-A (l'entrée de la septième
+  ronde disait que l'`Error` ne ferme pas le canal : le `finally` le ferme
+  bien, le processus tombe ensuite), SPEC-C (l'étape « deux installations »
+  ne nommait pas la route d'observation), SPEC-D (signal Ambre : trois
+  rondes dont les constats visent surtout du texte écrit pendant la
+  boucle — recommandation : changer d'angle, pressure test sur STD-A ou
+  passe sur le double de test; décision d'Olivier).
+
+### Surface et domaine
+
+- `SyncPusher` (mémoire de synchronisation), `DictionarySyncCoordinator`
+  (contrat de `SyncMemoire`), docs. Comportement changé sur un seul
+  chemin : l'écriture refusée des préférences.
+
+### Cause racine
+
+- Le port `SyncMemoire` avait été écrit avec la sémantique du double de
+  test — « faux = rien n'a changé » — sans vérifier celle de
+  l'implémentation : `commit()` ne dit que le disque, la mémoire a déjà
+  changé. Sept rondes ont raisonné sur un modèle que l'appareil n'a pas.
+
+### Correctif
+
+- `PreferencesSyncMemoire` (classe extraite de `SyncPusher`) : après un
+  `commit()` refusé, la valeur précédente est remise (ou la clé retirée si
+  elle n'existait pas) par un second `commit()` — qui échoue sur le même
+  disque, mais la mémoire suit. Le contrat est écrit sur `SyncMemoire` :
+  vrai = fait, sur disque comme pour la lecture suivante; faux = rien n'a
+  changé. Le double de test l'avait déjà; l'appareil l'a maintenant. Le
+  reste du coordinateur (`inscriptions`, `reapprises`, la garde
+  `if (durable)`, la branche non durable de `retirer`) est inchangé : ses
+  raisonnements tiennent sous ce contrat.
+- STD-B, SPEC-A, STD-E, SPEC-C : docs et registre. STD-1/F-COV et STD-D :
+  non touchés, décision d'Olivier attendue.
+
+### Test de non-régression
+
+- `PreferencesSyncMemoireTest` (cinq scénarios) sur un double fidèle à
+  `SharedPreferencesImpl` — `commit()` applique en mémoire puis rend le
+  résultat du disque : une écriture refusée laisse la valeur précédente,
+  une écriture refusée d'une clé nouvelle la laisse absente, un
+  effacement refusé laisse la valeur; et le premier scénario montre ce
+  que le double reproduit (la valeur refusée se lit, sans la remise).
+  Mutant : retirer `remettre` — trois des scénarios échouent.
+
+### Ce qui l'aurait attrapé plus tôt
+
+- Un double de test écrit d'après la source de la plateforme, pas d'après
+  l'idée qu'on s'en fait; et une lecture de `SharedPreferencesImpl` avant
+  d'écrire « le résultat de `commit()` » dans un contrat.

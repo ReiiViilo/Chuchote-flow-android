@@ -174,8 +174,10 @@ Synchronisation vers le relais (`/api/sync/*`), sur le même serveur de test :
 - [ ] deux installations sur le même relais, toutes deux avec cette version
   (deux téléphones, ou une réinstallation après effacement des données),
   chacune produisant sa **première** dictée — même numéro de ligne local
-  des deux côtés : deux lignes distinctes dans l'historique commun
-  (`device_local_id` préfixés d'identifiants d'installation différents);
+  des deux côtés : deux lignes distinctes dans l'historique commun, lues
+  dans les journaux du serveur de test (deux `POST /api/sync/dictations`)
+  ou dans sa table `dictations` (`device_local_id` préfixés d'identifiants
+  d'installation différents);
   des numéros de ligne différents coexisteraient même sans le correctif,
   et les dictées déposées avant lui gardent leur identifiant non préfixé;
 - [ ] sur une installation QA dont le relais n'a **jamais** été configuré —

@@ -10,17 +10,21 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 /**
- * La mémoire durable de la synchronisation — `chuchote_sync` sur l'appareil,
- * une table en test. Trois clés, lues et écrites sous le verrou du
- * coordinateur et nulle part ailleurs.
+ * La mémoire durable de la synchronisation — `chuchote_sync` sur l'appareil
+ * ([PreferencesSyncMemoire]), une table en test. Trois clés, lues et écrites
+ * sous le verrou du coordinateur et nulle part ailleurs. Contrat d'une
+ * écriture ou d'un effacement : vrai = fait, sur disque comme pour la lecture
+ * suivante; faux = rien n'a changé, ni sur disque ni pour la lecture
+ * suivante. Le coordinateur en dépend : ce qu'il tient pour « la file » est
+ * ce que `lire` rend.
  */
 internal interface SyncMemoire {
     fun lire(cle: String): String?
 
-    /** Vrai si la valeur est durable — sur l'appareil, le résultat de `commit()`. */
+    /** Vrai si la valeur est écrite; faux si rien n'a changé. */
     fun ecrire(cle: String, valeur: String): Boolean
 
-    /** Vrai si l'effacement est durable. */
+    /** Vrai si la clé est effacée; faux si rien n'a changé. */
     fun effacer(cle: String): Boolean
 }
 
