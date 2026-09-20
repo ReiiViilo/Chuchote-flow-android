@@ -111,6 +111,10 @@ perdue pour le cerveau commun (elle reste dans l'historique local). Il n'y a
 du desktop. Les deux points d'entrée sont idempotents côté serveur
 (paire `(device, device_local_id)` pour les dictées, paire `(heard,
 replace_with)` pour le dictionnaire), donc un renvoi ne crée pas de doublon.
+Le `device_local_id` d'une dictée est le numéro de ligne local préfixé d'un
+identifiant d'installation tiré au hasard une fois (`chuchote_sync`), jamais
+un identifiant matériel : deux téléphones — ou une réinstallation — ne se
+recouvrent pas au relais, et rien de ce qui y part ne désigne l'appareil.
 
 Conséquence pour la vie privée : le **texte** des dictées quitte désormais
 l'appareil même quand la transcription a été faite localement, dès que le

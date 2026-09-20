@@ -593,8 +593,10 @@ class DictionarySyncCoordinatorTest {
         // La pierre tombale part d'abord, par son propre travail, mis en file
         // avant que le verrou soit rendu; le rejeu du démarrage, derrière lui
         // avec une borne qui la couvre, ne l'a pas élaguée comme « redevenue
-        // vivante ». (Sans cet ordre, le rejeu partait parfois devant et la
-        // suppression était perdue : file vide, rien d'envoyé.)
+        // vivante ». (Sans cet ordre, le rejeu partait parfois devant : il
+        // élaguait la pierre tombale, republiait `kilo` comme vivant et
+        // inscrivait l'empreinte — la suppression était perdue, et rien ne
+        // la rejouait plus.)
         assertEquals("Mot #retrait[kilo→Kilo:retrait]", relais.recus.first())
         assertTrue(memoire.file.isEmpty())
     }
@@ -633,5 +635,39 @@ class DictionarySyncCoordinatorTest {
 
         assertTrue(relais.recus.isEmpty())
         assertNull(memoire.empreinte)
+    }
+
+    @Test
+    fun `un elagage refuse par le disque ne fait pas oublier un mot reappris`() = runBlocking {
+        val memoire = Memoire()
+        val relais = Relais()
+        val coordinateur = coordinateur(memoire, relais)
+        // 1. Suppression durable, relais en panne : la pierre tombale reste en file.
+        relais.enPanne = true
+        assertTrue(coordinateur.retirer("xray" to "X-ray"))
+        coordinateur.attendre()
+        assertEquals(listOf("xray" to "X-ray"), memoire.file.map { it.paire })
+        // 2. Le mot est réappris pendant que le disque refuse d'écrire : sa
+        //    pierre tombale ne sort pas de la file, il est retenu comme réappris.
+        memoire.ecritureRefusee = true
+        coordinateur.ajouter("xray" to "X-ray")
+        coordinateur.attendre()
+        // 3. Un démarrage l'élague (il est vivant) et tente d'écrire la file
+        //    vide : refusé — la file reste [xray] sur le disque.
+        coordinateur.synchroniserAuDemarrage { listOf(entree(1, "xray", "X-ray")) }
+        coordinateur.attendre()
+        assertEquals(listOf("xray" to "X-ray"), memoire.file.map { it.paire })
+        // 4. Disque et relais revenus : une autre suppression, durable, rejoue la file.
+        memoire.ecritureRefusee = false
+        relais.enPanne = false
+        assertTrue(coordinateur.retirer("zulu" to "Zulu"))
+        coordinateur.attendre()
+
+        // Sans la garde `if (durable)` de `ecrireFile`, l'élagage refusé de
+        // l'étape 3 aurait vidé `inscriptions` et `reapprises` : le rejeu de
+        // l'étape 4 aurait envoyé la pierre tombale de xray — un mot encore
+        // vivant ici — devant celle de zulu, et le pair l'aurait perdu.
+        assertEquals(listOf("Mot #retrait[zulu→Zulu:retrait]"), relais.recus)
+        assertTrue(memoire.file.none { it.paire == ("zulu" to "Zulu") })
     }
 }

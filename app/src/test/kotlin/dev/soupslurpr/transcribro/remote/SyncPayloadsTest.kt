@@ -26,6 +26,7 @@ class SyncPayloadsTest {
     @Test
     fun `une dictee porte les champs que le relais exige`() {
         val payload = SyncPayloads.dictation(
+            installationId = "inst",
             localId = 42,
             createdAtMs = 1_757_900_000_000,
             rawText = "hop hop conseil",
@@ -35,7 +36,7 @@ class SyncPayloadsTest {
         )
         val dictee = payload.getJSONArray("dictations").getJSONObject(0)
         assertEquals("android", dictee.getString("device"))
-        assertEquals("42", dictee.getString("device_local_id"))
+        assertEquals("inst:42", dictee.getString("device_local_id"))
         assertEquals("2025-09-15T01:33:20Z", dictee.getString("created_at"))
         assertEquals("hop hop conseil", dictee.getString("raw_text"))
         assertEquals("OpOp conseil", dictee.getString("final_text"))
@@ -45,11 +46,18 @@ class SyncPayloadsTest {
 
     @Test
     fun `les champs facultatifs absents partent en null explicite`() {
-        val dictee = SyncPayloads.dictation(1, 0, null, "texte", null, null)
+        val dictee = SyncPayloads.dictation("inst", 1, 0, null, "texte", null, null)
             .getJSONArray("dictations").getJSONObject(0)
         assertTrue(dictee.isNull("raw_text"))
         assertTrue(dictee.isNull("duration_ms"))
         assertTrue(dictee.isNull("source"))
+    }
+
+    @Test
+    fun `sans identifiant d installation le numero de ligne part tel quel`() {
+        val dictee = SyncPayloads.dictation("", 7, 0, null, "texte", null, null)
+            .getJSONArray("dictations").getJSONObject(0)
+        assertEquals("7", dictee.getString("device_local_id"))
     }
 
     @Test

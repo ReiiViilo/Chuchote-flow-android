@@ -15,7 +15,17 @@ object SyncPayloads {
     /** Le relais refuse plus de 500 entrées par envoi. */
     const val MAX_DICTIONARY_ENTRIES_PER_REQUEST = 500
 
+    /**
+     * Une dictée. Son `device_local_id` est l'identifiant de l'installation,
+     * deux-points, le numéro de ligne local : la clé de conflit du relais est
+     * `(device, device_local_id)` et `device` ne nomme qu'une plateforme,
+     * donc deux téléphones — ou une réinstallation, qui repart à la ligne 1 —
+     * s'écraseraient l'un l'autre sans ce préfixe (décision F du plan de
+     * synchronisation desktop). Sans identifiant d'installation, le numéro
+     * de ligne seul, tel qu'il partait avant.
+     */
     fun dictation(
+        installationId: String,
         localId: Long,
         createdAtMs: Long,
         rawText: String?,
@@ -27,7 +37,7 @@ object SyncPayloads {
         JSONArray().put(
             JSONObject()
                 .put("device", "android")
-                .put("device_local_id", localId.toString())
+                .put("device_local_id", if (installationId.isBlank()) localId.toString() else "$installationId:$localId")
                 .put("created_at", isoUtc(createdAtMs))
                 .put("raw_text", rawText ?: JSONObject.NULL)
                 .put("final_text", finalText)

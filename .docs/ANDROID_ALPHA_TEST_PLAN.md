@@ -168,9 +168,13 @@ Synchronisation vers le relais (`/api/sync/*`), sur le même serveur de test :
   suivant;
 - [ ] contre un serveur de test volontairement lent, retirer le consentement
   pendant un envoi de dictionnaire (ajout, pierre tombale ou lot) : la
-  connexion est interrompue (`logcat` : « Sync interrompue … consentement
-  retiré »), aucune empreinte n'est inscrite, la pierre tombale reste en
-  file et repart quand le consentement revient;
+  connexion est interrompue (`logcat` : « Sync interrompue … garde du
+  consentement fermée »), aucune empreinte n'est inscrite, la pierre
+  tombale reste en file et repart quand le consentement revient;
+- [ ] deux installations sur le même relais (deux téléphones, ou une
+  réinstallation après effacement des données) : leurs dictées coexistent
+  dans l'historique commun au lieu de s'écraser (`device_local_id`
+  distincts, préfixés de l'identifiant d'installation);
 - [ ] sur une installation QA dont le relais n'a **jamais** été configuré —
   donc une seconde installation, ou après effacement des données QA, **avant**
   toute configuration du relais, car le drapeau `sync_configured` posé par les

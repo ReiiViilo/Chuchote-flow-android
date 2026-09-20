@@ -135,6 +135,11 @@ internal class DictionarySyncCoordinator(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    // Une `Error` (mémoire épuisée sur un lot de 500, par
+                    // exemple) n'est pas rattrapée ici : elle tue le fil, le
+                    // canal se ferme et chaque demande suivante est refusée
+                    // et journalisée — assumé, plutôt que de continuer sur
+                    // une JVM en détresse.
                     journal("Travail de synchronisation abandonné (${e.javaClass.simpleName})")
                 }
             }
@@ -191,6 +196,9 @@ internal class DictionarySyncCoordinator(
             }
         }
         if (!durable) {
+            // Mise en file hors du verrou, et c'est sans conséquence : la
+            // pierre tombale n'étant pas en file, aucun rejeu ne peut ni
+            // l'élaguer ni la dépasser — seule la file durable est ordonnée.
             journal("Pierre tombale non inscrite (écriture des préférences refusée) : envoi immédiat seulement")
             demander {
                 val cible = destination() ?: return@demander

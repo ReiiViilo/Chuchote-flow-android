@@ -18,6 +18,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -82,6 +83,29 @@ class SyncPusher(context: Context) {
         )
     }
 
+    /**
+     * L'identifiant de cette installation, tiré au hasard une fois et gardé
+     * dans `chuchote_sync` : il préfixe le `device_local_id` des dictées,
+     * dont l'identifiant local est un numéro de ligne SQLite — le même sur
+     * deux téléphones, ou après une réinstallation — alors que le relais ne
+     * connaît que la plateforme et écraserait, en silence, la dictée de
+     * l'autre (décision F du plan de synchronisation desktop; constat
+     * externe Codex, 19 septembre 2026). Un identifiant tiré, jamais un
+     * identifiant matériel : rien au relais ne désigne l'appareil. Si
+     * l'écriture est refusée, il ne vaut que pour ce processus — les dictées
+     * de ce lancement restent distinctes entre elles, et le suivant en tire
+     * un autre. Lu sur le fil d'envoi, jamais sur le fil principal.
+     */
+    private val installationId: String by lazy {
+        prefs.getString(KEY_INSTALLATION_ID, null)?.takeIf { it.isNotBlank() } ?: run {
+            val tire = UUID.randomUUID().toString().replace("-", "")
+            if (!prefs.edit().putString(KEY_INSTALLATION_ID, tire).commit()) {
+                Log.w(TAG, "Identifiant d'installation non enregistré (écriture des préférences refusée) : valable pour ce processus seulement")
+            }
+            tire
+        }
+    }
+
     fun pushDictation(
         localId: Long,
         createdAtMs: Long,
@@ -96,7 +120,7 @@ class SyncPusher(context: Context) {
             send(
                 target,
                 "/api/sync/dictations",
-                SyncPayloads.dictation(localId, createdAtMs, rawText, finalText, durationMs, source),
+                SyncPayloads.dictation(installationId, localId, createdAtMs, rawText, finalText, durationMs, source),
                 "Dictée $localId",
                 SyncTimeouts.READ_TIMEOUT_MS,
             )
@@ -197,7 +221,10 @@ class SyncPusher(context: Context) {
             // Une annulation de la portée elle-même reste une annulation : le
             // fil d'envoi ne doit pas la prendre pour un refus du relais.
             currentCoroutineContext().ensureActive()
-            Log.w(TAG, "Sync interrompue pour $label : consentement retiré")
+            // La même exception sert quand la surveillance du consentement
+            // est interrompue ou indisponible : fermer est le bon réflexe
+            // dans les trois cas, le message ne prétend donc pas savoir lequel.
+            Log.w(TAG, "Sync interrompue pour $label : garde du consentement fermée (consentement retiré, ou sa surveillance indisponible)")
             false
         } catch (error: CancellationException) {
             throw error
@@ -281,5 +308,6 @@ class SyncPusher(context: Context) {
         const val TAG = "SyncPusher"
         const val PREFS = "chuchote_sync"
         const val KEY_SYNC_CONFIGURED = "sync_configured"
+        const val KEY_INSTALLATION_ID = "installation_id"
     }
 }

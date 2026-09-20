@@ -1018,10 +1018,11 @@ suppression est signalée).
   `inscriptions` ne suit plus que la file durable, chaque refus est
   journalisé, et un mot réappris dont la pierre tombale n'a pas pu être
   retirée est tenu pour vivant par tout rejeu (`reapprises`) jusqu'à une
-  écriture réussie — seul ce dernier cas est testé; les refus journalisés
-  et la garde `if (durable)` de `ecrireFile` n'ont pas de scénario
-  discriminant atteignable par l'API (toute divergence converge vers le
-  même état du relais).
+  écriture réussie — ce dernier cas est testé, et depuis la sixième ronde
+  la garde `if (durable)` de `ecrireFile` aussi (la phrase qui la disait
+  « sans scénario discriminant atteignable par l'API » était fausse, voir
+  cette ronde); les refus journalisés restent sans test — la fabrique du
+  harnais ne câble pas `journal`.
 - `runCatching` avalait `CancellationException` avant un `DELETE` :
   relancée.
 - `attendreLaFin` pendait sur une portée morte : `demander` rend son succès,
@@ -1176,3 +1177,99 @@ scénarios).
   (`CheckResult`), absent de la configuration. Quant à la borne, la règle
   « ce qui doit être ordonné se décide sous le même verrou » aurait dû être
   appliquée à la mise en file dès que la borne est née.
+
+## 2026-09-19 — Sixième ronde : la garde de l'élagage testée, l'identifiant d'installation devant le numéro de ligne des dictées
+
+### Symptôme observable
+
+- Aucun retour d'appareil. Sixième revue externe (Codex, 19 septembre
+  2026, `--base cf38768`, sur e4b76d1) : « needs-attention — Do not ship:
+  connection failures can still permanently resurrect deleted dictionary
+  entries. » Un seul constat, `[high] Older uploads can overwrite
+  acknowledged deletions` (`SyncPusher.kt:204-206`) : « If an upsert
+  reaches the relay but its response connection fails, this catch
+  immediately returns false and releases the serialized sender. A
+  subsequent tombstone can succeed and be removed from the durable queue
+  before the older upsert finishes. The relay's last-write-wins behavior
+  then resurrects the entry. Restart cannot repair it: the local entry is
+  absent and its tombstone is gone. This is the documented D-006 gap; the
+  longer timeout does not cover early connection failures. » — le résiduel
+  D-006 tel qu'Olivier l'a tranché le soir même (version de mutation
+  portée par l'appareil, refusée par le relais si plus ancienne :
+  tranche 1) : consigné, non corrigé ici. Sur le même commit,
+  `code-reviewer` : `changes_required`, « aucun changement de code
+  requis » — un bloquant, STD-1 : l'entrée de la quatrième ronde de ce
+  registre affirmait que la garde `if (durable)` de `ecrireFile` n'avait
+  « pas de scénario discriminant atteignable par l'API »; c'est faux, et
+  le reviewer a donné le contre-exemple, rejoué ci-dessous. Non
+  bloquants : STD-2 (la branche non durable de `retirer` met en file hors
+  du verrou — sans conséquence, mais les commentaires énonçaient une règle
+  plus forte que le code), STD-3 (« consentement retiré » journalisé
+  aussi quand c'est la surveillance du consentement qui est interrompue
+  ou indisponible, et le plan de test alpha en faisait son critère),
+  STD-4 (depuis la cinquième ronde, `send` n'attrape plus `Throwable`
+  mais `Exception` : une `Error` tue le fil d'envoi sans que le fil le
+  dise), STD-5 (le commentaire du test d'ordre décrivait un dégât
+  moindre que celui du mutant).
+- Même soirée, revue Codex de toute la tranche desktop : `[high]
+  Platform-scoped identifiers overwrite unrelated dictations` — `device`
+  ne nomme qu'une plateforme, et le `device_local_id` Android est un
+  numéro de ligne SQLite : deux téléphones sur le même relais (deux
+  jetons, décision D-002 du 19 septembre), ou une réinstallation qui
+  repart à la ligne 1, déposent le même `(android, 1)` et le second
+  écrase le texte du premier, chacun avec un 200. C'est la décision F du
+  plan de synchronisation desktop, appliquée sur les deux appareils sous
+  la délégation « petits points à ma discrétion », à confirmer par
+  Olivier.
+
+### Surface et domaine
+
+- `remote/SyncPusher.kt`, `remote/SyncPayloads.kt`,
+  `remote/DictionarySyncCoordinator.kt` (commentaires seulement), leurs
+  tests, `.docs/DATA_AND_PERSISTENCE.md`,
+  `.docs/REMOTE_RELAY_PRIVACY_SECURITY.md`, `.docs/ANDROID_ALPHA_TEST_PLAN.md`.
+
+### Cause racine
+
+- STD-1 : la phrase confondait « non atteignable par l'API » et « non
+  branché dans le harnais » — le scénario n'a besoin que de
+  `ecritureRefusee` et `enPanne`, deux leviers que le harnais avait déjà.
+- Décision F : le numéro de ligne d'une dictée n'a jamais été unique
+  au-delà d'une installation; tant qu'un seul téléphone déposait, rien ne
+  le montrait.
+
+### Correctif
+
+- `SyncPayloads.dictation` prend l'identifiant d'installation et envoie
+  `<installation>:<ligne>` (le numéro seul si l'identifiant est vide);
+  `SyncPusher` tire l'identifiant une fois — un `UUID` aléatoire, jamais
+  un identifiant matériel — et le garde dans `chuchote_sync`
+  (`installation_id`); une écriture refusée le limite au processus, avec
+  un journal. Relais inchangé, aucune migration : les dictées déjà
+  déposées gardent leur ancien identifiant, aucune ne fusionne.
+- STD-3 : le message devient « Sync interrompue pour … : garde du
+  consentement fermée (consentement retiré, ou sa surveillance
+  indisponible) », et le plan de test alpha l'attend tel quel.
+- STD-2, STD-4, STD-5 : commentaires, et la phrase de la quatrième ronde
+  corrigée (STD-1).
+
+### Test de non-régression
+
+- `un elagage refuse par le disque ne fait pas oublier un mot reappris`
+  (dix-huitième scénario du coordinateur) : suppression durable pendant
+  une panne du relais, mot réappris pendant que le disque refuse
+  d'écrire, démarrage qui élague et se voit refuser l'écriture, puis
+  suppression durable d'un autre mot une fois disque et relais revenus —
+  le relais ne reçoit que la pierre tombale du second mot. Mutant :
+  retirer `if (durable)` de `ecrireFile` — l'élagage refusé vide alors
+  `inscriptions` et `reapprises`, et le rejeu envoie la pierre tombale
+  d'un mot encore vivant ici, que le pair perd.
+- `SyncPayloadsTest` : `device_local_id` = `inst:42`; sans identifiant
+  d'installation, le numéro de ligne part tel quel.
+
+### Ce qui l'aurait attrapé plus tôt
+
+- Une règle pour ce registre : une absence de test se justifie par un
+  scénario qu'on a essayé d'écrire et qui ne discrimine pas, jamais par
+  une phrase. Et pour la décision F : un second appareil sur le relais
+  dès la première QA.
