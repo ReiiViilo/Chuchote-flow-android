@@ -33,7 +33,10 @@ Android ne possède pas encore :
 
 - de connexion Neon ou Supabase;
 - de compte utilisateur;
-- de synchronisation avec le desktop;
+- de synchronisation **bidirectionnelle** avec le desktop : depuis le
+  15 septembre 2026, Android pousse ses dictées terminées et son dictionnaire
+  au relais (`SyncPusher`, best-effort, pierres tombales rejouées), mais ne
+  tire rien — voir [REMOTE_RELAY_PRIVACY_SECURITY.md](REMOTE_RELAY_PRIVACY_SECURITY.md);
 - de post-traitement LLM FR-QC;
 - d'apprentissage statistique continu;
 - de tests instrumentés reproduisant les arbres d'accessibilité de Gmail,

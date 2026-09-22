@@ -21,8 +21,14 @@ professionnelles sensibles.
 
 - [ ] Installer l'APK QA sans retirer la version existante.
 - [ ] Vérifier le nom visible « Chuchote Flow QA » et la version attendue.
-- [ ] Ouvrir l'app : la politique du 23 août 2026 doit être présentée même si
-  une ancienne politique avait déjà été acceptée.
+- [ ] Effacer les données de l'app QA (jetables par invariant) ou vérifier
+  que la clé `ACCEPTED_PRIVACY_POLICY_AND_LICENSE_2026_09_15` n'y est pas déjà :
+  le texte de la politique a changé depuis la première QA de cette branche
+  sans nouvelle clé, et l'écran ne se représente pas à qui l'a déjà acceptée.
+- [ ] Ouvrir l'app : la politique du 15 septembre 2026 doit être présentée
+  même si une ancienne politique (23 août 2026 ou antérieure) avait déjà été
+  acceptée; son texte doit mentionner l'envoi du texte des dictées et du
+  dictionnaire au relais.
 - [ ] Avant acceptation, vérifier qu'aucun tap sur le clavier, le widget ou le
   lanceur ne démarre le microphone.
 - [ ] Accepter la politique, puis accorder microphone, superposition et service
@@ -143,10 +149,89 @@ test expurgé est disponible :
   pendant l'upload : la connexion est interrompue, aucun repli local ne démarre
   pour cette tentative et les octets déjà transmis sont traités comme
   irrévocables;
-- [ ] vérifier que le corps de l'erreur serveur n'apparaît pas dans `logcat`.
+- [ ] vérifier que le corps de l'erreur serveur n'apparaît pas dans `logcat`;
 - [ ] retourner successivement un corps `2xx` trop grand, du JSON invalide,
   `{"text":123}` et `{"text":{"error":"x"}}` : aucun contenu ne doit être
   injecté ou journalisé; le repli local doit être utilisé.
+
+Synchronisation vers le relais (`/api/sync/*`), sur le même serveur de test :
+
+- [ ] terminer une dictée **locale** (relais configuré mais serveur STT
+  éteint ou repli forcé) : un `POST /api/sync/dictations` part avec
+  `device=android`, le texte brut, le texte final et `source`; aucun audio;
+- [ ] ajouter une entrée au Dictionnaire : un `POST /api/sync/dictionary`
+  part avec `heard`, `replace_with`, `deleted=false`; supprimer l'entrée : même
+  route avec `deleted=true`;
+- [ ] couper le réseau, supprimer une entrée, rétablir le réseau, tuer et
+  relancer l'app : la pierre tombale part au démarrage (`SyncPusher` dans
+  `logcat` : « Mot #retrait synchronisé »), et rien ne repart au démarrage
+  suivant;
+- [ ] contre un serveur de test volontairement lent, retirer le consentement
+  pendant un envoi de dictionnaire (ajout, pierre tombale ou lot) : la
+  connexion est interrompue (`logcat` : « Sync interrompue … garde du
+  consentement fermée »), aucune empreinte n'est inscrite, la pierre
+  tombale reste en file et repart quand le consentement revient;
+- [ ] deux installations sur le même relais, toutes deux avec cette version
+  (deux téléphones, ou une réinstallation après effacement des données),
+  chacune produisant sa **première** dictée — même numéro de ligne local
+  des deux côtés : deux lignes distinctes dans l'historique commun, lues
+  dans les journaux du serveur de test (deux `POST /api/sync/dictations`)
+  ou dans sa table `dictations` (`device_local_id` préfixés d'identifiants
+  d'installation différents);
+  des numéros de ligne différents coexisteraient même sans le correctif,
+  et les dictées déposées avant lui gardent leur identifiant non préfixé;
+- [ ] sur une installation QA dont le relais n'a **jamais** été configuré —
+  donc une seconde installation, ou après effacement des données QA, **avant**
+  toute configuration du relais, car le drapeau `sync_configured` posé par les
+  étapes précédentes ne se retire pas — supprimer une entrée :
+  `chuchote_sync.xml` ne reçoit aucune `pending_tombstones`;
+- [ ] relais configuré puis éteint (ouvrir le réglage de jeton, ce qui le
+  désactive), supprimer une entrée, réactiver : la pierre tombale part
+  (« Mot #retrait synchronisé »);
+- [ ] avec un dictionnaire de plus de 500 entrées (fixture jetable QA) :
+  la republication de démarrage se fait en plusieurs `POST` de 500 au plus,
+  et un second démarrage sans changement n'en fait aucun;
+- [ ] avec la même fixture, supprimer une entrée **pendant** la republication
+  de démarrage (dans les secondes qui suivent le lancement) : la pierre
+  tombale part **après** le dernier lot (`logcat` : « Mot #retrait
+  synchronisé » après le dernier « lot n/n du dictionnaire synchronisé »),
+  un `GET /api/sync/dictionary` ne renvoie plus l'entrée, et le démarrage
+  suivant republie (l'empreinte a été effacée par la suppression);
+- [ ] avec la même fixture, pendant la republication de démarrage : supprimer
+  une entrée, la réapprendre (saisie manuelle), la supprimer de nouveau; après
+  le dernier lot, `logcat` montre « Mot #ajout synchronisé » **puis** « Mot
+  #retrait synchronisé » en dernier, et un `GET /api/sync/dictionary` ne
+  renvoie plus l'entrée;
+- [ ] relais **coupé**, supprimer une entrée puis tuer le processus (« Forcer
+  l'arrêt » dans les réglages système) : au lancement suivant, relais rétabli,
+  la pierre tombale part (« Mot #retrait synchronisé ») et l'entrée n'est ni
+  dans le Dictionnaire ni renvoyée par le `GET`. Cette étape prouve que la
+  file survit à la mort du processus, pas l'ordre inscription-avant-`DELETE`
+  (la fenêtre entre les deux dure quelques millisecondes, hors de portée d'un
+  arrêt manuel; c'est le test JVM `un rejeu de demarrage n elague pas la
+  pierre tombale d une suppression en cours` qui en établit le cas général —
+  pierre tombale inscrite après la demande du rejeu; la frontière d'égalité
+  reste ouverte, voir `DATA_AND_PERSISTENCE.md`). Si l'entrée est
+  encore dans le Dictionnaire au lancement suivant, le processus est mort
+  entre l'inscription et le `DELETE` : résiduel assumé, l'entrée est
+  republiée après sa pierre tombale et reste vivante des deux côtés;
+- [ ] changer l'adresse du relais pour un second serveur de test : au
+  démarrage suivant, tout le dictionnaire est republié vers lui; revenir à la
+  première adresse : republié aussi, l'empreinte étant liée à l'adresse; avec
+  la fixture de plus de 500 entrées, changer l'adresse — ou couper le relais —
+  **entre deux lots** de la republication : seul le lot déjà en vol atteint le
+  premier serveur (journal du relais), `logcat` montre « Relais changé ou
+  coupé pendant les envois : série arrêtée », et le démarrage suivant republie
+  tout vers le relais alors configuré;
+- [ ] ajouter deux fois la même paire à la main, puis supprimer l'une des
+  deux lignes : aucun « Mot #retrait » ne part et le `GET` renvoie toujours
+  la paire; supprimer la seconde : la pierre tombale part et le `GET` ne la
+  renvoie plus;
+- [ ] retirer le consentement : aucun `POST /api/sync/*` ne part, même pour
+  une pierre tombale déjà en file;
+- [ ] confirmer que ces requêtes correspondent exactement à la divulgation de
+  la politique (texte des dictées, entrées ajoutées ou retirées, jamais
+  d'audio ni de jeton dans le corps).
 
 Limite assumée : le protocole ne possède pas encore de clé d'idempotence. Un
 timeout ne permet pas de garantir qu'un fournisseur distant n'a traité le

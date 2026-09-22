@@ -135,6 +135,7 @@ internal data class TargetIdentity(
 }
 
 private const val TARGET_LOG_TAG = "ChuchoteTarget"
+private const val WATCH_LOG_TAG = "ChuchoteWatch"
 
 /**
  * Insère le texte dicté seulement si le champ capturé au début de la dictée
@@ -515,17 +516,21 @@ class TextInsertionAccessibilityService : AccessibilityService() {
                 actualSelectionEnd = verificationNode.textSelectionEnd,
             )
         }.getOrDefault(TextInsertionVerification.ACTION_UNCONFIRMED)
-        when (verification) {
-            TextInsertionVerification.ACTION_UNCONFIRMED -> {
-                // ACTION_SET_TEXT a déjà été accepté : ne jamais retenter ni
-                // demander un collage, ce qui pourrait insérer deux fois.
-                return TextInsertionResult.ACTION_ACCEPTED_UNCONFIRMED
-            }
-            TextInsertionVerification.CURSOR_UNCONFIRMED ->
-                return TextInsertionResult.INSERTED_CURSOR_UNCONFIRMED
-            TextInsertionVerification.CONFIRMED -> Unit
+        if (verification == TextInsertionVerification.ACTION_UNCONFIRMED) {
+            // ACTION_SET_TEXT a déjà été accepté : ne jamais retenter ni
+            // demander un collage, ce qui pourrait insérer deux fois. Le texte
+            // n'ayant pas pu être relu, il n'existe aucune référence fiable
+            // pour observer une correction : pas d'apprentissage ici.
+            logInsertionRefusal(focused, "verify_text_unreadable")
+            return TextInsertionResult.ACTION_ACCEPTED_UNCONFIRMED
         }
 
+        // Le texte est vérifié identique dans les deux cas restants. Un curseur
+        // qui n'a pas atterri où on l'attendait — ce que font couramment les
+        // champs web et React Native, qui le repositionnent eux-mêmes — ne
+        // dit rien sur le texte, et l'observation des corrections compare du
+        // texte. Sortir ici privait d'apprentissage précisément les
+        // applications où Olivier dicte le plus.
         verificationTarget
             .takeUnless { runCatching { verificationNode.isPassword }.getOrDefault(true) }
             ?.let {
@@ -536,7 +541,12 @@ class TextInsertionAccessibilityService : AccessibilityService() {
                     insertionEnd = composition.contentEnd,
                 )
             }
-        return TextInsertionResult.INSERTED
+
+        return if (verification == TextInsertionVerification.CURSOR_UNCONFIRMED) {
+            TextInsertionResult.INSERTED_CURSOR_UNCONFIRMED
+        } else {
+            TextInsertionResult.INSERTED
+        }
     }
 
     // --- Apprentissage des corrections -------------------------------------
@@ -559,7 +569,14 @@ class TextInsertionAccessibilityService : AccessibilityService() {
             fullText = fullBaseline,
             insertionStart = insertionStart,
             insertionEnd = insertionEnd,
-        ) ?: return
+        )
+        if (window == null) {
+            if (BuildConfig.DEBUG) Log.d(WATCH_LOG_TAG, "watch_refused len=${fullBaseline.length}")
+            return
+        }
+        if (BuildConfig.DEBUG) {
+            Log.d(WATCH_LOG_TAG, "watch_armed inserted=${insertionEnd - insertionStart} retained=${window.retainedCharacterCount}")
+        }
 
         handler.removeCallbacks(pollRunnable)
         watchTarget = target
@@ -608,6 +625,7 @@ class TextInsertionAccessibilityService : AccessibilityService() {
                 }
             }
 
+        if (BuildConfig.DEBUG) Log.d(WATCH_LOG_TAG, "watch_done proposals=${propositions.size}")
         if (propositions.isNotEmpty()) showProposal(propositions, target)
     }
 

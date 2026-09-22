@@ -1,21 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Généré par assets/brand/build-brand.mjs du dépôt desktop. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp"
-    android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
 
     <path
         android:fillColor="#00000000"
         android:strokeColor="#FFFFFF"
-        android:strokeWidth="5.38"
-        android:pathData="M25.34,54 a28.66,28.66 0 1,0 57.32,0 a28.66,28.66 0 1,0 -57.32,0 Z" />
+        android:strokeWidth="1.84"
+        android:pathData="M3.67,12 a8.33,8.33 0 1,0 16.66,0 a8.33,8.33 0 1,0 -16.66,0 Z" />
     <path
         android:fillColor="#00000000"
         android:strokeColor="#FFFFFF"
-        android:strokeWidth="5.38"
+        android:strokeWidth="1.84"
         android:strokeLineCap="round"
         android:strokeLineJoin="round"
-        android:pathData="M29.43,55.17 L37.62,55.17 L42.3,38.79 L49.91,72.72 L57.51,27.09 L65.11,63.95 L70.38,45.81 L75.06,55.17 L79.74,55.17" />
+        android:pathData="M4.86,12.34 L7.24,12.34 L8.6,7.58 L10.81,17.44 L13.02,4.18 L15.23,14.89 L16.76,9.62 L18.12,12.34 L19.48,12.34" />
 </vector>

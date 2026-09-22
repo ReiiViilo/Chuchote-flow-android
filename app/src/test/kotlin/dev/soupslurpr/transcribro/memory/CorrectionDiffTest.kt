@@ -34,4 +34,19 @@ class CorrectionDiffTest {
         assertTrue(CorrectionDiff.proposer("bonjour", "bonjour ami").isEmpty())
         assertTrue(CorrectionDiff.proposer("bonjour ami", "bonjour").isEmpty())
     }
+
+    @Test
+    fun `fin de champ - continuer d ecrire ne propose rien, corriger le dernier mot propose`() {
+        // Le scénario que la fenêtre laisse désormais passer jusqu'au diff.
+        assertTrue(
+            CorrectionDiff.proposer(
+                "envoie le rapport",
+                "envoie le rapport et ajoute le budget",
+            ).isEmpty(),
+        )
+        assertEquals(
+            listOf(CorrectionDiff.Proposition("rappor", "rapport")),
+            CorrectionDiff.proposer("envoie le rappor", "envoie le rapport"),
+        )
+    }
 }

@@ -86,10 +86,13 @@ internal data class CorrectionWatchWindow private constructor(
             if (fullText.splitsSurrogatePair(leftAnchorStart)) leftAnchorStart--
             if (fullText.splitsSurrogatePair(rightAnchorEnd)) rightAnchorEnd++
             val rightAnchor = fullText.substring(insertionEnd, rightAnchorEnd)
-            // Sans ancre droite, il est impossible de distinguer une
-            // correction du dernier mot d'une nouvelle phrase tapée après la
-            // dictée. L'apprentissage est alors volontairement désactivé.
-            if (rightAnchor.isEmpty()) return null
+            // Une ancre droite vide signifie que l'insertion touche la fin du
+            // champ — le cas de presque toutes les dictées. L'ancienne version
+            // désactivait alors l'apprentissage, si bien qu'aucune proposition
+            // n'apparaissait jamais en usage réel. La capture s'étend alors
+            // jusqu'à la fin du champ (bornée par MAX_CAPTURE_CHARS), et
+            // l'ambiguïté « correction du dernier mot ou nouvelle phrase » est
+            // résolue par CorrectionDiff : un ajout pur n'est jamais proposé.
 
             return CorrectionWatchWindow(
                 baseline = fullText.substring(insertionStart, insertionEnd),

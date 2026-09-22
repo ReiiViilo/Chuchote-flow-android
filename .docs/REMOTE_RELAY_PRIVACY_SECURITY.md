@@ -45,19 +45,102 @@ Content-Type: multipart/form-data
 ```
 
 Contenu : WAV PCM mono 16 bits, `language=fr` et prompt de vocabulaire
-facultatif. La réponse attendue est `{ "text": "..." }`. Le corps `2xx` est
+facultatif — les seules entrées de vocabulaire du dictionnaire, jamais les
+cibles de substitution (voir
+[DICTIONARY_AND_LEARNING.md](DICTIONARY_AND_LEARNING.md)); aucun autre champ
+(pas de `temperature`). Le corps est bâti par
+[`TranscriptionRequestBody`](../app/src/main/kotlin/dev/soupslurpr/transcribro/remote/TranscriptionRequestBody.kt),
+testé sur la JVM. La réponse attendue est `{ "text": "..." }`. Le corps `2xx` est
 borné à 262 144 caractères et `text` doit être une vraie chaîne JSON; un champ
 absent, `null`, numérique, objet ou tableau est invalide et entraîne le repli
 local. Références : [`RemoteTranscriber.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/remote/RemoteTranscriber.kt) et [`RemoteResponseDecoder.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/remote/RemoteResponseDecoder.kt).
 
 Le contrat serveur, les variables d'environnement et les erreurs sont documentés dans la source canonique [RELAY_API.md](https://github.com/ReiiViilo/Chuchote-Flow/blob/ab0479f136bc3f6fc0d9dffc22ffa08a58fd4552/.docs/RELAY_API.md).
 
+## Synchronisation vers le relais
+
+Depuis le 15 septembre 2026, [`SyncPusher`](../app/src/main/kotlin/dev/soupslurpr/transcribro/remote/SyncPusher.kt)
+pousse vers le même relais, **même URL et même jeton** que la transcription,
+deux familles de données, en JSON (`Content-Type: application/json`), construites
+par [`SyncPayloads`](../app/src/main/kotlin/dev/soupslurpr/transcribro/remote/SyncPayloads.kt)
+et vérifiées sur la JVM — avec le `org.json` de référence (`testImplementation`), pas celui d'Android : les deux divergent sur des bords que ces tests n'exercent pas (`optString` d'un `null` explicite, ordre des clés, exceptions), la preuve appareil reste donc celle du plan de test alpha :
+
+| Point d'entrée | Quand | Ce qui part |
+|---|---|---|
+| `POST /api/sync/dictations` | chaque dictée terminée, depuis `MainRecognitionService` | `device="android"`, identifiant local de la dictée préfixé de l'identifiant d'installation, `created_at` ISO UTC, texte brut STT, texte final après substitutions, durée, source |
+| `POST /api/sync/dictionary` | à l'ajout d'une entrée; à sa suppression (pierre tombale `deleted=true`, inscrite en file **avant** que la ligne soit effacée); au démarrage du store, les pierres tombales encore en file puis la liste entière si son empreinte SHA-256 — liée à l'adresse du relais, effacée par toute mutation du dictionnaire — n'est pas celle que **ce** relais a déjà acceptée : un relais nouvellement configuré reçoit donc tout le dictionnaire | `heard`, `replace_with`, `deleted` — par lots de 500 entrées au plus (plafond du relais), autant de lots que nécessaire, tous adressés au relais lu au départ de la republication; l'empreinte n'est retenue que si tous les lots sont passés et qu'aucune mutation n'a couru pendant les envois |
+
+Frontières, identiques au relais de transcription : rien ne part sans relais
+configuré **et** sans consentement courant, relu dans la coroutine d'envoi —
+et une série d'envois (lots d'une republication, pierres tombales d'un rejeu)
+s'arrête dès que le relais est coupé, son jeton tourné ou son adresse changée :
+la requête en vol s'achève, aucune autre ne part vers l'ancien relais.
+Tout est best-effort et hors du chemin critique : un échec (réseau, HTTP non
+`2xx`) est journalisé (`Log.w`, tag `SyncPusher`, code de diagnostic expurgé,
+jamais le contenu ni le message brut) puis oublié, la vérité locale reste
+`chuchote.db`. Tout ce qui part vers `/api/sync/dictionary` — ajouts, pierres
+tombales, republication — passe par un seul fil d'envoi, dans l'ordre où le
+magasin l'a demandé ([`DictionarySyncCoordinator`](../app/src/main/kotlin/dev/soupslurpr/transcribro/remote/DictionarySyncCoordinator.kt)),
+pour qu'une republication encore en vol ne ressuscite jamais un mot supprimé
+pendant qu'elle partait. **Une seule chose survit à la mort du processus** :
+la pierre tombale d'une suppression, conservée dans `chuchote_sync` (exclu des
+sauvegardes) tant que le relais ne l'a pas acceptée, rejouée à chaque démarrage
+et à chaque nouvelle suppression — un rejeu n'envoie que les pierres tombales
+inscrites avant sa demande —, retirée de la file si le mot est réappris
+entre-temps. La file
+n'est alimentée que si la synchronisation a déjà été configurée une fois sur
+l'appareil (drapeau `sync_configured` dans `chuchote_sync` : un appareil sans
+relais ne garde aucune trace de ses suppressions, mais un relais momentanément
+éteint le temps d'une rotation de jeton n'en perd aucune), plafonnée à 200
+paires — les plus anciennes cèdent la place — et une pierre tombale de plus de
+30 jours n'est plus rejouée : le relais date chaque réception, et une
+suppression si vieille effacerait un mot que le desktop a pu réapprendre depuis
+(`PendingTombstones`). Un consentement retiré ne vide pas la file : rien ne
+part tant qu'il est absent, et la péremption la borne (arbitrage d'Olivier du
+16 septembre 2026). Retiré pendant un envoi, il le coupe : la connexion est
+fermée depuis le fil qui révoque (`RemoteConsentGuard`, comme pour l'audio),
+ce qui n'est pas parti reste dû, et les octets déjà transmis sont
+irrévocables. Le verrou de la file n'est jamais tenu pendant un appel
+réseau; les pierres tombales acceptées sont retirées de la file courante, pas
+remplacées par l'instantané du départ. Sans cela,
+une suppression faite hors ligne laisserait le desktop réécrire le mot
+indéfiniment. Les ajouts et les dictées, eux, ne sont pas rejoués : un ajout
+manqué est rattrapé par la republication de démarrage, une dictée manquée est
+perdue pour le cerveau commun (elle reste dans l'historique local). Il n'y a
+**aucun tirage** depuis le relais : Android n'importe ni dictées ni mots venus
+du desktop. Les deux points d'entrée sont idempotents côté serveur
+(paire `(device, device_local_id)` pour les dictées, paire `(heard,
+replace_with)` pour le dictionnaire), donc un renvoi ne crée pas de doublon.
+Le `device_local_id` d'une dictée est le numéro de ligne local préfixé d'un
+identifiant d'installation tiré au hasard une fois (`chuchote_sync`), jamais
+un identifiant matériel : deux téléphones — ou une réinstallation — ne se
+recouvrent pas au relais. Il ne révèle ni le matériel ni qui dicte, mais
+c'est un pseudonyme stable : dans l'historique partagé (D-002, pairs de
+confiance), les dictées d'une installation se distinguent durablement de
+celles d'une autre. C'est une donnée nouvelle qui accompagne chaque dictée
+depuis le 19 septembre 2026 — sans identité ni matériel derrière, la
+divulgation du 15 septembre est tenue pour couvrante; c'est à Olivier de le
+confirmer, le reversionnement du consentement étant sa décision.
+
+Conséquence pour la vie privée : le **texte** des dictées quitte désormais
+l'appareil même quand la transcription a été faite localement, dès que le
+relais est configuré et le consentement donné. La politique du 15 septembre
+2026 le divulgue et le consentement a été reversionné en conséquence (voir
+« Consentement d'exécution »). Depuis le 19 septembre 2026, le dictionnaire
+personnel entier est republié vers **chaque** adresse de relais nouvellement
+configurée (l'empreinte est liée à l'adresse), et non plus une seule fois :
+l'ensemble des destinataires s'élargit avec chaque relais saisi — aucune donnée
+nouvelle ne sort, la divulgation du 15 septembre reste couvrante. Le contrat serveur et ses défauts connus sont
+décrits dans le plan
+[`PLAN_SYNC_TEMPS_REEL_ET_UI_COMMUNE.md`](https://github.com/ReiiViilo/Chuchote-Flow/blob/main/.docs/PLAN_SYNC_TEMPS_REEL_ET_UI_COMMUNE.md)
+du dépôt desktop.
+
 ## Frontières de données
 
 | Fonction | Données qui restent locales | Données qui peuvent quitter l'appareil |
 |---|---|---|
 | Whisper local | WAV privé, segment audio, résultat et dictionnaire | aucune donnée STT applicative |
-| Relais activé | WAV privé et historique SQLite final | WAV du segment, langue, prompt de vocabulaire, jeton |
+| Relais activé | WAV privé et historique SQLite final | WAV du segment, langue, prompt de vocabulaire, jeton; texte des dictées terminées et entrées du dictionnaire (voir « Synchronisation vers le relais ») |
 | Insertion widget | dictionnaire et proposition acceptée | texte inséré dans l'application cible choisie |
 | Sauvegarde Android | WAV, base SQLite, historique, dictionnaire et configuration du relais explicitement exclus | préférences générales non secrètes potentiellement éligibles |
 
@@ -83,9 +166,11 @@ La description système et la politique indiquent désormais que le service peut
 relire temporairement le même champ pendant environ 30 secondes afin de
 détecter une correction. La candidate borne la mémoire conservée à une fenêtre
 locale, exclut les mots de passe et purge l'observation lors d'un changement de
-cible sensible. Une correction acceptée est écrite au dictionnaire local; ce
-dictionnaire peut ensuite entrer dans le prompt envoyé au relais si celui-ci
-est activé. La politique visible divulgue maintenant cette conséquence.
+cible sensible. Une correction acceptée est écrite au dictionnaire local; seules les
+entrées de vocabulaire de ce dictionnaire (sans cible de remplacement) entrent
+ensuite dans le prompt envoyé au relais si celui-ci est activé — une
+correction apprise n'y entre donc pas. La politique visible divulgue
+maintenant cette conséquence.
 
 Références : [`strings.xml`](../app/src/main/res/values/strings.xml#L40), [`accessibility_service_config.xml`](../app/src/main/res/xml/accessibility_service_config.xml) et [`TextInsertionAccessibilityService.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/overlay/TextInsertionAccessibilityService.kt#L139-L167).
 
@@ -109,8 +194,11 @@ L'interface avertit l'utilisateur avant le partage, mais cela reste une expositi
 
 ## Consentement d'exécution
 
-La candidate versionne la politique du 23 août 2026. Une acceptation de
-l'ancienne politique ne déverrouille rien automatiquement. Le consentement
+La candidate versionne la politique du 15 septembre 2026
+(`ACCEPTED_PRIVACY_POLICY_AND_LICENSE_2026_09_15`), qui divulgue la
+synchronisation du texte des dictées et du dictionnaire vers le relais. Une
+acceptation de l'ancienne politique (23 août 2026) ne déverrouille rien
+automatiquement : à la mise à jour, l'écran de consentement se représente. Le consentement
 courant est relu avant le widget, l'IME, la capture, une reprise de WAV et une
 requête au relais. Une garde centrale l'observe ensuite pendant toute la durée
 de l'upload, tandis que le relais le relit encore immédiatement avant d'ouvrir
@@ -156,7 +244,24 @@ Références : [`AndroidManifest.xml`](../app/src/main/AndroidManifest.xml#L39-L
   sauvegarde ou un transfert Android;
 - URL de relais libre, sans contrat versionné ni pinning;
 - jeton sans identité, portée, expiration ou rotation dans le protocole actuel;
-- dictionnaire personnel transmis au fournisseur sous forme de prompt;
+- entrées de vocabulaire du dictionnaire transmises au fournisseur sous forme de prompt;
+- texte des dictées et dictionnaire entier poussés au relais, sous le **même
+  jeton** que la transcription : qui détient le jeton lit l'historique commun
+  (voir la décision E du plan de synchronisation, un jeton distinct est
+  recommandé);
+- un seul consentement couvre audio, texte et vocabulaire, alors que le texte
+  des dictées quitte désormais l'appareil même sans transcription distante;
+- une dictée dont la poussée échoue (réseau absent au moment de la dictée)
+  n'est jamais renvoyée : le cerveau commun peut manquer des dictées que
+  l'historique local possède;
+- la file de pierres tombales vit dans un `SharedPreferences` : un effacement
+  des données de l'app la perd, et le desktop garde alors le mot jusqu'à ce
+  qu'il soit de nouveau supprimé en ligne; même sort pour une pierre tombale
+  périmée (30 jours) ou évincée par le plafond (200), et pour toute la file si
+  elle devient illisible;
+- le relais applique dernier-écrit-gagne : une pierre tombale rejouée en
+  retard (moins de 30 jours) efface un mot que le desktop aurait réappris
+  entre-temps, tant que le relais ne compare pas les dates (tranche 1 du plan);
 - permission notifications déclarée, mais aucune demande runtime correspondante n'a été trouvée;
 - aucune preuve réseau automatisée montrant exactement les données transmises;
 - aucune preuve de limitation de débit fournie par ce dépôt client;
@@ -173,7 +278,14 @@ des clés d'idempotence persistées et des accusés durables.
 
 ## Exigences avant synchronisation cloud
 
-Une future intégration Neon ou autre doit passer par une API authentifiée et ne jamais embarquer de secret administrateur dans l'APK. Elle devra aussi documenter :
+La poussée vers le relais (section « Synchronisation vers le relais ») en est
+une première marche : elle passe par l'API du relais, sans secret Neon dans
+l'APK, et documente ce qui part et pourquoi. Le reste de la liste ci-dessous
+n'est **pas** couvert — en particulier le consentement distinct pour le texte
+et le vocabulaire, et l'identité d'appareil — et doit l'être avant le tirage
+bidirectionnel prévu au plan. Une future intégration Neon ou autre doit passer
+par une API authentifiée et ne jamais embarquer de secret administrateur dans
+l'APK. Elle devra aussi documenter :
 
 - données envoyées et finalité;
 - fournisseur, région et rétention;

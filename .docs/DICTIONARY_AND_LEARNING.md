@@ -14,7 +14,7 @@ Deux types d'entrées coexistent :
 | `entendu` | `remplacer_par` | Effet réel |
 |---|---|---|
 | terme ou expression | vide | `entendu` est ajouté au prompt envoyé au relais distant; aucune substitution locale |
-| forme mal reconnue | correction non vide | `remplacer_par` est ajouté au prompt distant et une substitution exacte est appliquée après toute transcription, locale ou distante |
+| forme mal reconnue | correction non vide | une substitution exacte est appliquée après toute transcription, locale ou distante; depuis le 15 septembre 2026, ni `entendu` ni `remplacer_par` ne sont soufflés au relais |
 
 Source : [`ChuchoteStore.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/memory/ChuchoteStore.kt), projection `EntreeDictionnaire` et opérations du dictionnaire.
 
@@ -28,7 +28,12 @@ Références : [`DictionaryScreen.kt`](../app/src/main/kotlin/dev/soupslurpr/tra
 
 Pour chaque entrée dont `remplacer_par` n'est pas vide, le store applique une regex Unicode insensible à la casse avec frontières de mot ou de phrase. Il peut préserver une majuscule initiale.
 
-Référence : [`ChuchoteStore.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/memory/ChuchoteStore.kt), fonction `appliquerCorrections`.
+Depuis le 15 septembre 2026, la logique vit dans l'objet Kotlin pur [`DictionnaireSubstitution`](../app/src/main/kotlin/dev/soupslurpr/transcribro/memory/DictionnaireSubstitution.kt), testé sur la JVM avec les mêmes vecteurs que `dictionary.rs` côté desktop (garde de longueur et chevauchement compris — une divergence de vecteur est une divergence entre surfaces). Les regex sont compilées une fois par liste publiée. Deux garde-fous s'y ajoutent :
+
+- une forme entendue dont le cœur — le mot débarrassé de la ponctuation qui le borde, comme `CorrectionDiff` le découpe — compte moins de trois caractères (« op », « au », « IA ») ne déclenche jamais de substitution, car elle apparaît partout dans la parole ordinaire. L'écran Dictionnaire affiche « Correction inactive » sur une telle entrée plutôt que de la laisser passer pour active. Revers assumé : un sigle de deux lettres ne peut pas être une substitution;
+- chaque entrée ayant réellement modifié un texte est journalisée en `Log.d` sous le tag `ChuchoteDictionnaire` — **l'identifiant de l'entrée et son nombre d'occurrences seulement**, jamais son texte (une entrée est bâtie à partir de la transcription et du champ corrigé, elle n'a pas plus sa place dans logcat qu'une dictée). L'identifiant se retrouve dans `chuchote.db` en séance appareil.
+
+Référence : [`ChuchoteStore.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/memory/ChuchoteStore.kt), fonction `appliquerCorrections`, qui délègue.
 
 Cette étape se trouve dans le service central après un résultat local comme distant. Elle fonctionne donc avec les deux chemins. Références : [`MainRecognitionService.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/recognitionservice/MainRecognitionService.kt#L347-L359) et [`MainRecognitionService.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/recognitionservice/MainRecognitionService.kt#L422-L433).
 
@@ -41,9 +46,9 @@ Cette étape se trouve dans le service central après un résultat local comme d
 
 ## Biais de reconnaissance
 
-`motsPourBiais()` construit un prompt à partir du dictionnaire, limité à 600 caractères. Il prend `entendu` lorsque le remplacement est vide et `remplacer_par` dans le cas contraire, puis retire les doublons exacts. Référence : [`ChuchoteStore.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/memory/ChuchoteStore.kt), fonction `motsPourBiais`.
+`motsPourBiais()` construit un prompt à partir du dictionnaire, borné à 600 caractères. Depuis le 15 septembre 2026, il ne prend que les **entrées de vocabulaire** (`remplacer_par` vide), dédoublonnées à la casse près, sous forme de liste séparée par des virgules, sans préfixe et sans jamais couper un mot (une entrée qui dépasserait la borne est laissée de côté). Les **cibles de substitution** n'y entrent plus : la substitution les garantit déjà, et les souffler au modèle les exposait à être recopiées là où rien de tel n'avait été dit. C'est l'hypothèse retenue pour le bug « up » (voir [BUGS_HISTORY.md](../BUGS_HISTORY.md)) : Whisper est connu pour reproduire le vocabulaire soufflé sur un segment court ou hésitant, et la transcription par segments au fil de l'eau multiplie ces segments. L'hypothèse n'a pas été reproduite sur l'appareil; le journal `ChuchoteDictionnaire` sert précisément à la confirmer ou l'infirmer. Qui veut malgré tout orienter le modèle vers un mot l'ajoute comme entrée de vocabulaire. Référence : [`DictionnaireSubstitution`](../app/src/main/kotlin/dev/soupslurpr/transcribro/memory/DictionnaireSubstitution.kt), fonction `vocabulairePourBiais`.
 
-Ce prompt est utilisé uniquement dans [`RemoteTranscriber.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/remote/RemoteTranscriber.kt#L67-L76). Le JNI Whisper local ne reçoit aucun `initial_prompt`.
+Ce prompt est utilisé uniquement dans [`RemoteTranscriber.kt`](../app/src/main/kotlin/dev/soupslurpr/transcribro/remote/RemoteTranscriber.kt), dont le corps multipart est bâti par [`TranscriptionRequestBody`](../app/src/main/kotlin/dev/soupslurpr/transcribro/remote/TranscriptionRequestBody.kt) (champs `file`, `language`, et `prompt` seulement s'il est non vide). Aucune `temperature` n'est envoyée : `0` est déjà la valeur par défaut du fournisseur et n'y rend pas le décodage déterministe (le fournisseur remonte la température de lui-même quand le décodage échoue), l'envoyer ne changeait donc rien. Le JNI Whisper local ne reçoit aucun `initial_prompt`.
 
 Conséquence importante : le texte UI qui affirme qu'une entrée avec seulement un mot aide « la transcription » est trop général. Cette entrée peut influencer le fournisseur distant lorsque le relais fonctionne, mais elle n'influence pas Whisper local au snapshot audité.
 
@@ -110,7 +115,7 @@ Référence : [`ChuchoteStore.kt`](../app/src/main/kotlin/dev/soupslurpr/transcr
 - expressions multi-mots évaluées sans substitution excessive;
 - langue et contexte;
 - déduplication et résolution des contradictions;
-- synchronisation avec les mots personnalisés du desktop;
+- fusion avec les mots personnalisés du desktop : depuis le 15 septembre 2026, chaque entrée est poussée au relais (`/api/sync/dictionary`) à l'ajout, en tombstone à la suppression (mise en file locale bornée si le relais est injoignable), et la liste entière au démarrage si elle a changé; le desktop la tire de là. La réciproque (desktop → Android) et la fusion avec `custom_words` restent à faire;
 - moyen de désactiver ou annuler une correction apprise;
 - corpus de test représentatif de la manière de parler d'Olivier.
 

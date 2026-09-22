@@ -154,6 +154,9 @@ dependencies {
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
 
     testImplementation("junit:junit:4.13.2")
+    // Le org.json du SDK n'est qu'un squelette en test JVM : la vraie
+    // bibliothèque permet de vérifier les charges utiles envoyées au relais.
+    testImplementation("org.json:json:20260814")
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
 }

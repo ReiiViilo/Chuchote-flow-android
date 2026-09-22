@@ -12,6 +12,7 @@ import dev.soupslurpr.transcribro.recognitionservice.audio.HistoricalAudioRehabi
 import dev.soupslurpr.transcribro.recognitionservice.audio.PrivateAudioPathResolver
 import dev.soupslurpr.transcribro.recognitionservice.audio.RecoverableWavFile
 import dev.soupslurpr.transcribro.recognitionservice.audio.TranscriptionSessionGate
+import dev.soupslurpr.transcribro.remote.SyncPusher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -196,6 +197,19 @@ class ChuchoteStore private constructor(
         EmptyCoroutineContext
     }
     private val scope = CoroutineScope(storeJob + dbDispatcher + isolatedTestExceptionHandler)
+
+    // Nul pour un magasin de test isolé : c'est ici, et nulle part ailleurs,
+    // que se décide si une écriture locale est publiée — un site d'appel qui
+    // oublierait la garde n'est plus possible. Paresseux : aucune
+    // configuration réseau n'est lue tant qu'aucun mot n'est appris.
+    // Dépendance assumée de `memory` vers `remote` pour cette tranche : la
+    // publication suit l'écriture locale, quel que soit l'écran qui l'a
+    // demandée. Une interface possédée par `memory` viendra quand le desktop
+    // publiera aussi (plan de synchronisation, tranche 2).
+    private val syncPusher: SyncPusher? by lazy {
+        if (isolatedTestStore) null else SyncPusher(context)
+    }
+
     private val initializationResult = CompletableDeferred<Unit>()
     private val initializationJob: Job
 
@@ -211,6 +225,17 @@ class ChuchoteStore private constructor(
             // Publier les données existantes avant toute maintenance historique.
             rechargerDictees()
             rechargerDictionnaire()
+            // Remonter le dictionnaire au démarrage s'il a changé depuis la
+            // dernière remontée, et rejouer les suppressions restées en file.
+            // Sans cela, les mots appris avant l'arrivée de la synchronisation
+            // ne partiraient jamais — seuls les nouveaux ajouts le feraient —
+            // et un ajout ou un retrait manqué hors ligne ne serait pas
+            // réparé. Best-effort, donc derrière la même frontière que le
+            // reste de la maintenance : jamais un prérequis au chargement.
+            StoreStartupBoundary.runBestEffort(
+                step = { syncPusher?.synchroniserAuDemarrage { _dictionnaire.value } },
+                onFailure = ::journaliserEchecSynchronisation,
+            )
             var didMutateHistory = false
             val markHistoryMutation = { didMutateHistory = true }
             StoreStartupBoundary.runBestEffort(
@@ -469,50 +494,86 @@ class ChuchoteStore private constructor(
         val mot = entendu.trim()
         if (mot.isEmpty()) return
         scope.launch {
-            db.writableDatabase.insert("dictionnaire", null, ContentValues().apply {
+            val ligne = db.writableDatabase.insert("dictionnaire", null, ContentValues().apply {
                 put("entendu", mot)
                 put("remplacer_par", remplacerPar.trim())
             })
+            if (ligne == -1L) {
+                // `insert` rend -1 sans lever (disque plein, contrainte) : rien
+                // n'est en base, rien n'est annoncé au relais — il y gagnerait
+                // un mot que l'appareil ne connaît pas et qu'aucune ligne ne
+                // permettrait de retirer.
+                Log.w(TAG_DICTIONNAIRE, "Ajout refusé par SQLite, rien n'est annoncé au relais")
+                return@launch
+            }
             rechargerDictionnaire()
+            // Publier depuis le magasin plutôt que depuis l'appelant : les deux
+            // chemins d'ajout — pop-up de correction et saisie manuelle — sont
+            // ainsi couverts, et un troisième le serait d'office. L'envoi reste
+            // best-effort et postérieur à l'écriture locale, qui fait foi.
+            syncPusher?.pushDictionaryEntry(mot, remplacerPar)
         }
     }
 
     fun supprimerEntree(id: Long) {
         scope.launch {
+            // Lire la paire avant de l'effacer : la pierre tombale envoyée au
+            // cerveau commun porte (entendu, remplacement), sa clé côté relais.
+            // Sans elle, l'autre appareil continuerait d'appliquer un mot
+            // qu'on vient de retirer ici.
+            val entree = _dictionnaire.value.firstOrNull { it.id == id }
+            // Seulement pour la dernière ligne de sa paire : la table admet
+            // les doublons, la clé du relais est la paire.
+            val paire = PierreTombale.aAnnoncer(_dictionnaire.value, id)
+            if (paire == null) {
+                val motif = if (entree == null) "ligne inconnue du dictionnaire chargé" else "une autre ligne porte la même paire"
+                Log.w(TAG_DICTIONNAIRE, "Suppression #$id : $motif, rien n'est annoncé au relais")
+            }
+            // La pierre tombale est inscrite dans `chuchote_sync` — sur ce fil,
+            // avant de revenir — **avant** d'effacer la ligne : si le processus
+            // meurt entre les deux, la suppression n'a pas eu lieu et le rejeu
+            // du démarrage écarte une pierre tombale dont le mot est encore
+            // vivant; dans l'ordre inverse, une suppression faite mais jamais
+            // annoncée laisserait le mot au relais pour toujours. Si
+            // l'inscription elle-même échoue (disque) ou lève, la suppression
+            // locale a lieu quand même — la vérité locale ne dépend pas du
+            // relais — et la pierre tombale n'a qu'un envoi immédiat, ou rien,
+            // pour arriver.
+            if (paire != null) {
+                val durable = try {
+                    syncPusher?.pushDictionaryTombstone(paire.first, paire.second) ?: true
+                } catch (e: CancellationException) {
+                    throw e // jamais avalée : rien ne s'efface dans une coroutine annulée
+                } catch (e: Exception) {
+                    Log.w(TAG_DICTIONNAIRE, "Pierre tombale #$id non inscrite (${e.javaClass.simpleName})")
+                    false
+                }
+                if (!durable) {
+                    Log.w(TAG_DICTIONNAIRE, "Pierre tombale #$id non inscrite : le relais peut garder ce mot")
+                }
+            }
             db.writableDatabase.delete("dictionnaire", "id = ?", arrayOf(id.toString()))
             rechargerDictionnaire()
         }
     }
 
-    fun appliquerCorrections(texte: String): String {
-        var resultat = texte
-        for (entree in _dictionnaire.value) {
-            if (entree.remplacerPar.isEmpty()) continue
-            val regex = Regex(
-                "(?iu)(?<![\\p{L}\\p{N}])${Regex.escape(entree.entendu)}(?![\\p{L}\\p{N}])"
-            )
-            resultat = regex.replace(resultat) { correspondance ->
-                val brut = entree.remplacerPar
-                if (
-                    correspondance.value.first().isUpperCase() &&
-                    brut.firstOrNull()?.isLowerCase() == true
-                ) {
-                    brut.replaceFirstChar { it.uppercase() }
-                } else {
-                    brut
-                }
-            }
+    fun appliquerCorrections(texte: String): String =
+        DictionnaireSubstitution.appliquer(texte, _dictionnaire.value) { entree, occurrences ->
+            // L'identifiant seulement : une entrée est bâtie à partir de la
+            // transcription et du champ corrigé, donc son texte n'a pas plus sa
+            // place dans logcat qu'une dictée. L'identifiant suffit à retrouver
+            // l'entrée responsable d'une correction inattendue (écran
+            // Dictionnaire, ou `chuchote.db` en séance appareil).
+            Log.d(TAG_DICTIONNAIRE, "Substitution #${entree.id} ×$occurrences")
         }
-        return resultat
-    }
 
-    fun motsPourBiais(): String {
-        val mots = _dictionnaire.value
-            .map { it.remplacerPar.ifEmpty { it.entendu } }
-            .distinct()
-        if (mots.isEmpty()) return ""
-        return mots.joinToString(", ").take(MAX_BIAIS_CARACTERES)
-    }
+    /**
+     * Le vocabulaire soufflé au relais : les entrées de vocabulaire seulement.
+     * Les cibles de substitution en sont exclues — voir
+     * [DictionnaireSubstitution] pour la raison.
+     */
+    fun motsPourBiais(): String =
+        DictionnaireSubstitution.vocabulairePourBiais(_dictionnaire.value, MAX_BIAIS_CARACTERES)
 
     // ------------------------------------------------------------------
 
@@ -548,6 +609,14 @@ class ChuchoteStore private constructor(
             STORE_TAG,
             "Réhabilitation audio historique ignorée; chargement normal poursuivi",
             error,
+        )
+    }
+
+    private fun journaliserEchecSynchronisation(error: Throwable) {
+        // Sans le message : une exception réseau peut nommer l'hôte du relais.
+        Log.w(
+            STORE_TAG,
+            "Synchronisation du dictionnaire non lancée au démarrage (${error.javaClass.simpleName}); chargement normal poursuivi",
         )
     }
 
@@ -870,6 +939,7 @@ class ChuchoteStore private constructor(
         private const val HISTORICAL_AUDIO_INDEX = "idx_dictees_historical_audio_errors"
         private const val MAX_ERROR_CODE_LENGTH = 120
         private const val MAX_BIAIS_CARACTERES = 600
+        private const val TAG_DICTIONNAIRE = "ChuchoteDictionnaire"
         private const val STORE_TAG = "ChuchoteStore"
         private const val DICTEE_COLUMNS =
             "id, texte, raw_text, cree_le, duree_ms, source, audio_path, " +
